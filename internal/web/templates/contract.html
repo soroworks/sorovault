@@ -1,0 +1,158 @@
+{{define "contract.html"}}
+{{template "page_head" "SoroVault · contract"}}
+
+<nav class="crumbs"><a href="/">← All contracts</a></nav>
+
+<h1 class="mono id">{{.Contract.ContractID}}</h1>
+
+<dl class="facts">
+  <div><dt>Network</dt><dd><span class="badge">{{.Contract.Network}}</span></dd></div>
+  <div><dt>WASM hash</dt><dd class="mono break">{{.Spec.WasmHash}}</dd></div>
+  <div><dt>First seen</dt><dd>{{.Contract.FirstSeen.UTC.Format "2006-01-02 15:04"}} UTC</dd></div>
+  <div><dt>Decoded</dt><dd>{{.Spec.DecodedAt.UTC.Format "2006-01-02 15:04"}} UTC</dd></div>
+</dl>
+
+{{if not .IsCurrent}}
+  <p class="notice">
+    You are viewing a superseded interface.
+    <a href="/contracts/{{.Contract.ContractID}}?network={{.Contract.Network}}">View the current one →</a>
+  </p>
+{{end}}
+
+{{with .Interface.Meta}}
+<section>
+  <h2>Build metadata</h2>
+  <dl class="facts">
+    {{range $k, $v := .}}<div><dt>{{$k}}</dt><dd class="mono break">{{$v}}</dd></div>{{end}}
+  </dl>
+</section>
+{{end}}
+
+<section>
+  <h2>Functions <span class="count-badge">{{len .Interface.Functions}}</span></h2>
+  {{if .Interface.Functions}}
+    {{range .Interface.Functions}}
+    <article class="fn">
+      <h3 class="mono">{{signature .}}</h3>
+      {{if .Doc}}<p class="doc">{{.Doc}}</p>{{end}}
+      {{if .Inputs}}
+      <table class="params">
+        <tbody>
+        {{range .Inputs}}
+          <tr>
+            <td class="mono pname">{{.Name}}</td>
+            <td class="mono ptype">{{.Type.Display}}</td>
+            <td class="dim">{{.Doc}}</td>
+          </tr>
+        {{end}}
+        </tbody>
+      </table>
+      {{end}}
+      <p class="returns">
+        returns <code>{{if .Outputs}}{{(index .Outputs 0).Display}}{{else}}(){{end}}</code>
+        <a class="jsonlink"
+           href="/api/contracts/{{$.Contract.ContractID}}/functions/{{.Name}}?network={{$.Contract.Network}}&amp;wasm_hash={{$.Spec.WasmHash}}">JSON</a>
+      </p>
+    </article>
+    {{end}}
+  {{else}}
+    <p class="dim">This contract exposes no functions.</p>
+  {{end}}
+</section>
+
+{{if hasTypes .Interface.Types}}
+<section>
+  <h2>Types</h2>
+
+  {{range .Interface.Types.Structs}}
+  <article class="udt">
+    <h3 class="mono">struct {{.Name}}{{if .IsTuple}} <span class="dim">(tuple)</span>{{end}}</h3>
+    {{if .Doc}}<p class="doc">{{.Doc}}</p>{{end}}
+    <table class="params"><tbody>
+      {{range .Fields}}<tr><td class="mono pname">{{.Name}}</td><td class="mono ptype">{{.Type.Display}}</td></tr>{{end}}
+    </tbody></table>
+  </article>
+  {{end}}
+
+  {{range .Interface.Types.Unions}}
+  <article class="udt">
+    <h3 class="mono">enum {{.Name}}</h3>
+    {{if .Doc}}<p class="doc">{{.Doc}}</p>{{end}}
+    <table class="params"><tbody>
+      {{range .Cases}}
+      <tr>
+        <td class="mono pname">{{.Name}}</td>
+        <td class="mono ptype">{{range $i, $t := .Values}}{{if $i}}, {{end}}{{$t.Display}}{{end}}</td>
+      </tr>
+      {{end}}
+    </tbody></table>
+  </article>
+  {{end}}
+
+  {{range .Interface.Types.Enums}}
+  <article class="udt">
+    <h3 class="mono">enum {{.Name}} <span class="dim">(u32)</span></h3>
+    {{if .Doc}}<p class="doc">{{.Doc}}</p>{{end}}
+    <table class="params"><tbody>
+      {{range .Cases}}<tr><td class="mono pname">{{.Name}}</td><td class="mono ptype">{{.Value}}</td></tr>{{end}}
+    </tbody></table>
+  </article>
+  {{end}}
+
+  {{range .Interface.Types.ErrorEnums}}
+  <article class="udt">
+    <h3 class="mono">error {{.Name}}</h3>
+    {{if .Doc}}<p class="doc">{{.Doc}}</p>{{end}}
+    <table class="params"><tbody>
+      {{range .Cases}}<tr><td class="mono pname">{{.Name}}</td><td class="mono ptype">{{.Value}}</td></tr>{{end}}
+    </tbody></table>
+  </article>
+  {{end}}
+</section>
+{{end}}
+
+{{if .Interface.Events}}
+<section>
+  <h2>Events <span class="count-badge">{{len .Interface.Events}}</span></h2>
+  {{range .Interface.Events}}
+  <article class="udt">
+    <h3 class="mono">{{.Name}}</h3>
+    {{if .Doc}}<p class="doc">{{.Doc}}</p>{{end}}
+    <table class="params"><tbody>
+      {{range .Params}}
+      <tr>
+        <td class="mono pname">{{.Name}}</td>
+        <td class="mono ptype">{{.Type.Display}}</td>
+        <td class="dim">{{.Location}}</td>
+      </tr>
+      {{end}}
+    </tbody></table>
+    <p class="dim">data format: {{.DataFormat}}</p>
+  </article>
+  {{end}}
+</section>
+{{end}}
+
+<section>
+  <h2>Versions</h2>
+  <table class="contracts">
+    <thead><tr><th>WASM hash</th><th>Decoded</th><th></th></tr></thead>
+    <tbody>
+    {{range .Versions}}
+      <tr>
+        <td><a class="mono" href="/contracts/{{$.Contract.ContractID}}?network={{$.Contract.Network}}&amp;wasm_hash={{.WasmHash}}">{{short .WasmHash 24}}</a></td>
+        <td class="dim">{{.DecodedAt.UTC.Format "2006-01-02 15:04"}} UTC</td>
+        <td>{{if .Current}}<span class="badge current">current</span>{{end}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+</section>
+
+<p class="jsonfoot">
+  Full ABI as JSON:
+  <a class="mono" href="/api/contracts/{{.Contract.ContractID}}?network={{.Contract.Network}}&amp;wasm_hash={{.Spec.WasmHash}}">/api/contracts/{{short .Contract.ContractID 12}}</a>
+</p>
+
+{{template "page_foot"}}
+{{end}}

@@ -1,0 +1,27 @@
+{{define "page_head"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.}}</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">SoroVault</a>
+  <span class="tagline">Soroban contract interface registry</span>
+</header>
+<main>
+{{end}}
+
+{{define "page_foot"}}
+</main>
+<footer>
+  <a href="/api/contracts">JSON API</a>
+  <span class="sep">·</span>
+  <a href="https://developers.stellar.org/docs/build/guides/dapps/working-with-contract-specs">Contract specs</a>
+</footer>
+</body>
+</html>
+{{end}}

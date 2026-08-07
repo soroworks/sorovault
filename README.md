@@ -1,0 +1,346 @@
+# SoroVault
+
+A contract metadata and interface (ABI) registry for the Stellar/Soroban network.
+
+SoroVault fetches a deployed contract's WASM, decodes the interface embedded in
+it, stores it, and serves a searchable registry — so tools and humans can
+discover what functions and types a contract exposes.
+
+**Status:** MVP. The core is complete and tested; see [open ground](#open-ground)
+for where contributions are most welcome.
+
+---
+
+## Why
+
+A deployed Soroban contract is a black box unless you have its interface.
+
+The interface is right there in the uploaded WASM — Soroban embeds it as a
+`contractspecv0` custom section — but getting at it means knowing which ledger
+entries to read, how to walk a WASM binary, and how to decode a stream of XDR.
+Every tool that wants to know what a contract does re-implements that.
+
+SoroVault does it once and serves the result as clean JSON:
+
+```console
+$ curl -s localhost:8080/api/contracts/CDZZ…4PAN | jq '.interface.functions[].name'
+"vote"
+"has_voted"
+"initialize"
+"get_proposal"
+"get_total_votes"
+"get_vote_params"
+"get_proposal_count"
+```
+
+It is the discovery layer for contract interfaces, and the natural companion to
+a deployer (SoroForge) and a simulator (SoroProbe).
+
+## What it does
+
+- **Register** a contract by ID — fetch its WASM, decode the interface, store it
+- **Search** the registry by contract ID or name
+- **Serve** the decoded ABI as JSON: functions, arguments, return types, UDTs, events
+- **Version** interfaces — when a contract is upgraded, the prior interface is kept
+- **Browse** it all in a small server-rendered UI
+
+Records are namespaced by network, so the same contract ID on testnet and
+mainnet are separate entries.
+
+## Verified against
+
+Contract spec handling evolves, so these were confirmed against live sources
+rather than recalled. Verified **2026-08-07**:
+
+| | Version | Note |
+|---|---|---|
+| Go | **1.25** | required by the SDK; `go.mod` pins `1.25.0` |
+| [`github.com/stellar/go-stellar-sdk`](https://github.com/stellar/go-stellar-sdk) | **v0.7.1** | RPC client and XDR |
+| Stellar RPC (testnet) | 27.1.1, protocol 27 | endpoint the decode path was exercised against |
+| soroban-sdk (test fixture) | 25.3.0 | the contract in `internal/spec/testdata` |
+| [SEP-48](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0048.md) | 1.1.0 | contract interface specification |
+
+> **On the SDK:** the original plan named `github.com/stellar/go`. That module is
+> now formally deprecated — its `go.mod` carries
+> `// Deprecated: Use github.com/stellar/go-stellar-sdk instead` — so SoroVault
+> builds against the successor. This is also why the Go floor is 1.25 rather
+> than the 1.22 originally targeted: the new SDK requires it.
+
+### How the interface is actually retrieved
+
+Worth writing down, because it is the part that is easy to get wrong:
+
+1. **Contract instance.** Build a `LedgerKey` for `ContractData` with the
+   contract's `ScAddress`, the key `ScvLedgerKeyContractInstance`, and
+   `Persistent` durability. `getLedgerEntries` returns a `ContractDataEntry`
+   whose `Val.Instance.Executable.WasmHash` names the module.
+   - A Stellar asset contract has no `WasmHash` — it is built into the host, so
+     there is no interface to decode. SoroVault reports this distinctly.
+2. **Contract code.** Build a `LedgerKey` for `ContractCode` keyed by that hash.
+   `getLedgerEntries` returns a `ContractCodeEntry` holding the module bytes.
+   The hash is the SHA-256 of the module, which is what makes it a usable
+   version identifier.
+3. **Spec section.** Walk the WASM's section framing for the custom section
+   named `contractspecv0`.
+4. **Decode.** Its body is a **bare stream of XDR-encoded `SCSpecEntry` values**
+   — no header, no delimiter, no length prefix between entries. Read it by
+   calling `xdr.Unmarshal` in a loop until the reader is drained.
+5. **Metadata.** The optional `contractmetav0` section holds `SCMetaEntry`
+   key/value pairs (`rsver`, `rssdkver`). Its absence is not an error.
+
+The SDK does not parse WASM custom sections, so `internal/wasm` implements the
+small amount of the binary format that step 3 needs.
+
+## Quickstart
+
+The fastest path is Docker, which brings up Postgres, applies migrations and
+starts the server:
+
+```console
+$ git clone https://github.com/soroworks/sorovault && cd sorovault
+$ make up
+```
+
+Then register a contract and browse it:
+
+```console
+$ curl -X POST localhost:8080/api/contracts \
+    -H 'content-type: application/json' \
+    -d '{"contract_id":"CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN"}'
+```
+
+Open <http://localhost:8080> for the browse UI.
+
+### Running locally
+
+```console
+$ cp .env.example .env          # adjust as needed
+$ set -a && source .env && set +a
+
+$ docker compose up -d db       # or point DATABASE_URL at your own Postgres
+$ go run ./cmd/sorovault migrate
+$ go run ./cmd/sorovault add CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN
+$ go run ./cmd/sorovault serve
+```
+
+## Configuration
+
+All configuration is environment variables. Only `DATABASE_URL` is required.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DATABASE_URL` | — | Postgres connection string. **Required.** |
+| `RPC_URL` | `https://soroban-testnet.stellar.org` | Stellar RPC endpoint |
+| `NETWORK_PASSPHRASE` | `Test SDF Network ; September 2015` | the network you expect `RPC_URL` to serve |
+| `HTTP_ADDR` | `:8080` | listen address |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| `RPC_TIMEOUT` | `30s` | bound on a single contract fetch |
+
+`NETWORK_PASSPHRASE` is a guard, not a source of truth. SoroVault reads the real
+passphrase from the RPC endpoint and refuses to proceed if the two disagree, so
+a stale `RPC_URL` cannot quietly file mainnet contracts under `testnet`.
+
+## HTTP API
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/contracts` | list contracts — `?q=`, `?network=`, `?limit=`, `?offset=` |
+| `POST` | `/api/contracts` | register a contract — `{"contract_id": "C…"}` |
+| `GET` | `/api/contracts/{id}` | the decoded ABI — `?network=`, `?wasm_hash=` |
+| `GET` | `/api/contracts/{id}/functions/{fn}` | one function in detail |
+| `GET` | `/api/contracts/{id}/versions` | every stored interface version |
+| `POST` | `/api/contracts/{id}/refresh` | re-check against the network |
+| `GET` | `/healthz` | liveness |
+
+`POST /api/contracts` returns **201** when the contract is new and **200** when
+it was already registered, so it is safe to retry. Passing `?wasm_hash=` to a
+read selects a superseded version instead of the current one.
+
+Status codes worth knowing: **422** means the contract exists but has no
+interface to serve (a Stellar asset contract, or a module with no spec section),
+as distinct from **404**, which means it is not there at all.
+
+## CLI
+
+```console
+sorovault add <contract_id>...      # fetch, decode and register
+sorovault refresh <contract_id>...  # re-check for an upgraded interface
+sorovault list                      # -q, --network, --limit, --offset
+sorovault get <contract_id>         # --function, --wasm-hash, --json
+sorovault serve                     # JSON API + browse UI
+sorovault migrate                   # apply schema migrations
+```
+
+`add` and `refresh` accept several contract IDs and report per-contract
+failures without abandoning the rest. Every read command takes `--json`, which
+emits exactly what the API serves:
+
+```console
+$ sorovault get CDZZ…4PAN --function has_voted
+fn has_voted(nullifier: BytesN<32>) -> bool
+
+inputs:
+  nullifier  BytesN<32>
+
+returns: bool
+```
+
+## The ABI JSON
+
+This is the project's public contract — the shape other tooling should build
+against. `abi_version` is bumped if it ever changes incompatibly.
+
+```jsonc
+{
+  "abi_version": "1",
+  "meta": { "rsver": "1.93.0-nightly", "rssdkver": "25.3.0#dcbea445…" },
+
+  "functions": [
+    {
+      "name": "vote",
+      "doc": "Cast a vote using a ZK Firma Digital Groth16 proof.…",
+      "inputs": [
+        { "name": "voter",       "type": { "kind": "address", "display": "Address" } },
+        { "name": "pub_signals", "type": { "kind": "vec", "display": "Vec<BytesN<32>>",
+                                           "element": { "kind": "bytes_n", "display": "BytesN<32>", "n": 32 } } }
+      ],
+      "outputs": [
+        { "kind": "result", "display": "Result<(), Error>",
+          "ok":    { "kind": "void",  "display": "()" },
+          "error": { "kind": "error", "display": "Error" } }
+      ]
+    }
+  ],
+
+  "types": {
+    "structs":     [ { "name": "Proposal", "fields": [ … ], "is_tuple": false } ],
+    "unions":      [ { "name": "DataKey",  "cases":  [ { "name": "Admin", "values": [] } ] } ],
+    "enums":       [ { "name": "Status",   "cases":  [ { "name": "Active", "value": 0 } ] } ],
+    "error_enums": [ { "name": "Error",    "cases":  [ { "name": "AlreadyVoted", "value": 5 } ] } ]
+  },
+
+  "events": [
+    {
+      "name": "Voted",
+      "prefix_topics": ["voted"],
+      "params": [
+        { "name": "voter",          "type": { "kind": "address", "display": "Address" }, "location": "topic-list" },
+        { "name": "proposal_index", "type": { "kind": "u32",     "display": "u32"     }, "location": "data" }
+      ],
+      "data_format": "map"
+    }
+  ]
+}
+```
+
+### Types
+
+Every type is an object with a `kind` and a `display`. `display` is the
+human-readable rendering of the whole type (`"Option<Vec<u32>>"`) so that UIs
+and documentation generators do not each have to re-implement the traversal.
+
+**Scalars** — `val`, `bool`, `void`, `error`, `u32`, `i32`, `u64`, `i64`,
+`timepoint`, `duration`, `u128`, `i128`, `u256`, `i256`, `bytes`, `string`,
+`symbol`, `address`, `muxed_address`. These carry no extra fields.
+
+**Containers** — each adds the fields it needs:
+
+| `kind` | Extra fields |
+|---|---|
+| `option` | `inner` |
+| `vec` | `element` |
+| `map` | `key`, `value` |
+| `result` | `ok`, `error` |
+| `tuple` | `elements` (array) |
+| `bytes_n` | `n` |
+| `udt` | `name` — refers to an entry in `types` |
+
+A few things worth relying on:
+
+- `outputs` is an array, but Soroban allows at most one entry. **Empty means the
+  function returns nothing.**
+- Empty collections are `[]`, never `null`, so you can iterate without a check.
+- `is_tuple` on a struct marks a Rust tuple struct, which Soroban encodes as a
+  struct whose fields are named `"0"`, `"1"`, … — flagged so consumers need not
+  re-derive it.
+- `meta` is omitted entirely when a contract carries no metadata section.
+
+## How it fits together
+
+```
+cmd/sorovault      cobra CLI; also serves the API and UI
+internal/config    environment configuration
+internal/model     the ABI model — no dependencies, the public JSON contract
+internal/wasm      WASM custom-section reader
+internal/spec      contract spec decoding: XDR -> model
+internal/stellar   RPC client and contract fetch
+internal/store     Postgres registry, migrations, and an in-memory store
+internal/registry  register/refresh orchestration
+internal/api       chi JSON handlers
+internal/web       html/template + htmx browse UI
+```
+
+Three seams are interfaces, and each one is the natural place to extend the
+project: **`stellar.Fetcher`** (where contract code comes from),
+**`spec.Decoder`** (how an interface is derived), and **`store.Store`** (where
+the registry lives). Nothing above a seam depends on what is below it, which is
+why the whole stack can be tested without a network or a database.
+
+### Data model
+
+```
+contracts (network, contract_id)  PK
+  current_wasm_hash, name, first_seen, last_refreshed
+
+specs     (network, contract_id, wasm_hash)  UNIQUE
+  spec jsonb, decoded_at
+```
+
+Refreshing an upgraded contract **appends** a `specs` row and repoints
+`current_wasm_hash`. Prior versions are never overwritten, so an interface that
+was live at some point stays retrievable by its hash.
+
+## Development
+
+```console
+$ make test        # no database, no network needed
+$ make test-all    # also runs the store suite against a throwaway Postgres
+$ make lint
+$ make build
+$ make help        # everything else
+```
+
+`go test ./...` **never touches the network.** The decode path is exercised
+against a real testnet contract checked in at
+[`internal/spec/testdata/zkvote.wasm`](internal/spec/testdata/) — its provenance
+and a hash check are documented alongside it. Layers above `internal/stellar`
+run against a fake network (`internal/stellar/stellartest`).
+
+The Postgres store suite skips unless `TEST_DATABASE_URL` is set; `make
+test-all` and CI both set it. Both store implementations run the **same
+conformance suite**, so the in-memory one other packages test against cannot
+drift from the real one.
+
+## Open ground
+
+Contributions welcome. Deliberately **not** built yet:
+
+- **SDK / client codegen from the ABI.** The registry already serves everything
+  a generator needs — types are recursive and fully resolved, and UDT
+  references are by name. Generating typed Go, TypeScript or Python clients
+  from `GET /api/contracts/{id}` is the single highest-value thing to build on
+  top of SoroVault, and a great first substantial contribution.
+- **Automatic refresh.** Refresh is manual today. A background poller that
+  re-checks contracts on a schedule would need little more than a loop over
+  `registry.Refresh`.
+- **Resolving contract names.** The schema carries a `name`, but nothing
+  populates it yet.
+- **Full-text search.** Search is a substring match on ID and name. Searching
+  across function and type names would mean indexing the stored jsonb.
+
+Explicitly out of scope: authentication, and any write operation against
+contracts themselves. SoroVault reads chain state; it never sends a transaction.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).

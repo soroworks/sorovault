@@ -1,0 +1,9 @@
+{{define "error.html"}}
+{{template "page_head" "SoroVault · error"}}
+
+<h1>{{.Status}}</h1>
+<p class="lede">{{.Message}}</p>
+<p><a href="/">← Back to all contracts</a></p>
+
+{{template "page_foot"}}
+{{end}}

@@ -1,0 +1,365 @@
+{
+  "abi_version": "1",
+  "meta": {
+    "rssdkver": "25.3.0#dcbea44513feb7734af6b6c4aced2c4a7a2715d0",
+    "rsver": "1.93.0-nightly"
+  },
+  "functions": [
+    {
+      "name": "vote",
+      "doc": "Cast a vote using a ZK Firma Digital Groth16 proof.\n\nThe proof is verified by a cross-contract call to the `zk_verifier`\ncontract.  Double-voting is prevented via the nullifier stored in\npersistent storage.\n\n### Public signals layout (5 × 32-byte big-endian scalars)\n\n\n| idx | meaning                                                       |\n|-----|---------------------------------------------------------------|\n| 0   | `pubkeyHash`     — Poseidon hash of the signing RSA pubkey    |\n| 1   | `nullifier`      — unique per voter; prevents double-voting   |\n| 2   | `ageAbove18`     — reveal flag (0 or 1); not checked here     |\n| 3   | `nullifierSeed`  — must equal `vote_params.vote_scope`        |\n| 4   | `signalHash`     — binding commitment (see identity_gate)     |\n\n* `voter`          – account casting the vote (must authorise the tx)\n* `proposal_index` – 0-based index into the proposals list\n* `pub_signals`    – 5 public circuit outputs (see table above)\n* `a`              – Groth16 proof poi",
+      "inputs": [
+        {
+          "name": "voter",
+          "type": {
+            "kind": "address",
+            "display": "Address"
+          }
+        },
+        {
+          "name": "proposal_index",
+          "type": {
+            "kind": "u32",
+            "display": "u32"
+          }
+        },
+        {
+          "name": "pub_signals",
+          "type": {
+            "kind": "vec",
+            "display": "Vec\u003cBytesN\u003c32\u003e\u003e",
+            "element": {
+              "kind": "bytes_n",
+              "display": "BytesN\u003c32\u003e",
+              "n": 32
+            }
+          }
+        },
+        {
+          "name": "a",
+          "type": {
+            "kind": "bytes_n",
+            "display": "BytesN\u003c64\u003e",
+            "n": 64
+          }
+        },
+        {
+          "name": "b",
+          "type": {
+            "kind": "bytes_n",
+            "display": "BytesN\u003c128\u003e",
+            "n": 128
+          }
+        },
+        {
+          "name": "c",
+          "type": {
+            "kind": "bytes_n",
+            "display": "BytesN\u003c64\u003e",
+            "n": 64
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "kind": "result",
+          "display": "Result\u003c(), Error\u003e",
+          "ok": {
+            "kind": "void",
+            "display": "()"
+          },
+          "error": {
+            "kind": "error",
+            "display": "Error"
+          }
+        }
+      ]
+    },
+    {
+      "name": "has_voted",
+      "inputs": [
+        {
+          "name": "nullifier",
+          "type": {
+            "kind": "bytes_n",
+            "display": "BytesN\u003c32\u003e",
+            "n": 32
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "kind": "bool",
+          "display": "bool"
+        }
+      ]
+    },
+    {
+      "name": "initialize",
+      "doc": "One-time initialization.  Must be called before any votes can be cast.\n\n* `admin`                 – address that deployed this contract\n* `verifier_id`           – address of the deployed `zk_verifier` contract\n* `vote_params`           – campaign configuration\n* `proposal_descriptions` – human-readable label for each option",
+      "inputs": [
+        {
+          "name": "admin",
+          "type": {
+            "kind": "address",
+            "display": "Address"
+          }
+        },
+        {
+          "name": "verifier_id",
+          "type": {
+            "kind": "address",
+            "display": "Address"
+          }
+        },
+        {
+          "name": "vote_params",
+          "type": {
+            "kind": "udt",
+            "display": "VoteParams",
+            "name": "VoteParams"
+          }
+        },
+        {
+          "name": "proposal_descriptions",
+          "type": {
+            "kind": "vec",
+            "display": "Vec\u003cString\u003e",
+            "element": {
+              "kind": "string",
+              "display": "String"
+            }
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "kind": "result",
+          "display": "Result\u003c(), Error\u003e",
+          "ok": {
+            "kind": "void",
+            "display": "()"
+          },
+          "error": {
+            "kind": "error",
+            "display": "Error"
+          }
+        }
+      ]
+    },
+    {
+      "name": "get_proposal",
+      "inputs": [
+        {
+          "name": "index",
+          "type": {
+            "kind": "u32",
+            "display": "u32"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "kind": "result",
+          "display": "Result\u003cProposal, Error\u003e",
+          "ok": {
+            "kind": "udt",
+            "display": "Proposal",
+            "name": "Proposal"
+          },
+          "error": {
+            "kind": "error",
+            "display": "Error"
+          }
+        }
+      ]
+    },
+    {
+      "name": "get_total_votes",
+      "inputs": [],
+      "outputs": [
+        {
+          "kind": "u64",
+          "display": "u64"
+        }
+      ]
+    },
+    {
+      "name": "get_vote_params",
+      "inputs": [],
+      "outputs": [
+        {
+          "kind": "result",
+          "display": "Result\u003cVoteParams, Error\u003e",
+          "ok": {
+            "kind": "udt",
+            "display": "VoteParams",
+            "name": "VoteParams"
+          },
+          "error": {
+            "kind": "error",
+            "display": "Error"
+          }
+        }
+      ]
+    },
+    {
+      "name": "get_proposal_count",
+      "inputs": [],
+      "outputs": [
+        {
+          "kind": "u32",
+          "display": "u32"
+        }
+      ]
+    }
+  ],
+  "types": {
+    "structs": [
+      {
+        "name": "Proposal",
+        "fields": [
+          {
+            "name": "description",
+            "type": {
+              "kind": "string",
+              "display": "String"
+            }
+          },
+          {
+            "name": "vote_count",
+            "type": {
+              "kind": "u64",
+              "display": "u64"
+            }
+          }
+        ],
+        "is_tuple": false
+      },
+      {
+        "name": "VoteParams",
+        "doc": "Parameters defining a voting campaign.  Stored in contract storage and used as\ninputs to the ZK circuit via public signals.  See `vote` method and circuit\ncomments for details on how these are used.\n\n`vote_scope` acts as a domain separator so the same ZK identity cannot\nbe reused across different voting campaigns.\n\n`citizenship_whitelist` stores encoded country codes (empty = unrestricted).\nIt is metadata only in the current circuit — enforcement would require a\ndedicated circuit output signal.",
+        "fields": [
+          {
+            "name": "birth_date_lowerbound",
+            "type": {
+              "kind": "u64",
+              "display": "u64"
+            }
+          },
+          {
+            "name": "citizenship_whitelist",
+            "type": {
+              "kind": "vec",
+              "display": "Vec\u003cu64\u003e",
+              "element": {
+                "kind": "u64",
+                "display": "u64"
+              }
+            }
+          },
+          {
+            "name": "expiration_date_lower_bound",
+            "type": {
+              "kind": "u64",
+              "display": "u64"
+            }
+          },
+          {
+            "name": "identity_counter_upper_bound",
+            "type": {
+              "kind": "u64",
+              "display": "u64"
+            }
+          },
+          {
+            "name": "identity_ts_upper_bound",
+            "type": {
+              "kind": "u64",
+              "display": "u64"
+            }
+          },
+          {
+            "name": "vote_scope",
+            "type": {
+              "kind": "u64",
+              "display": "u64"
+            }
+          },
+          {
+            "name": "voting_question",
+            "type": {
+              "kind": "string",
+              "display": "String"
+            }
+          }
+        ],
+        "is_tuple": false
+      }
+    ],
+    "unions": [],
+    "enums": [],
+    "error_enums": [
+      {
+        "name": "Error",
+        "cases": [
+          {
+            "name": "AlreadyInitialized",
+            "value": 1
+          },
+          {
+            "name": "NotInitialized",
+            "value": 2
+          },
+          {
+            "name": "InvalidProposalIndex",
+            "value": 3
+          },
+          {
+            "name": "WrongNullifierSeed",
+            "value": 4
+          },
+          {
+            "name": "AlreadyVoted",
+            "value": 5
+          },
+          {
+            "name": "InvalidProof",
+            "value": 6
+          },
+          {
+            "name": "WrongPubSignalsLen",
+            "value": 7
+          }
+        ]
+      }
+    ]
+  },
+  "events": [
+    {
+      "name": "Voted",
+      "prefix_topics": [
+        "voted"
+      ],
+      "params": [
+        {
+          "name": "voter",
+          "type": {
+            "kind": "address",
+            "display": "Address"
+          },
+          "location": "topic-list"
+        },
+        {
+          "name": "proposal_index",
+          "type": {
+            "kind": "u32",
+            "display": "u32"
+          },
+          "location": "data"
+        }
+      ],
+      "data_format": "map"
+    }
+  ]
+}

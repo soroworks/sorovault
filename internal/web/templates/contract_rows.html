@@ -1,0 +1,39 @@
+{{define "contract_rows.html"}}
+<div id="contract-rows">
+{{if .Contracts}}
+  <p class="count">{{.Total}} contract{{if ne .Total 1}}s{{end}}{{if .Query}} matching “{{.Query}}”{{end}}</p>
+  <table class="contracts">
+    <thead>
+      <tr>
+        <th>Contract</th>
+        <th>Network</th>
+        <th>WASM hash</th>
+        <th>Last refreshed</th>
+      </tr>
+    </thead>
+    <tbody>
+    {{range .Contracts}}
+      <tr>
+        <td>
+          <a class="mono" href="/contracts/{{.ContractID}}?network={{.Network}}">{{.ContractID}}</a>
+          {{if .Name}}<div class="name">{{.Name}}</div>{{end}}
+        </td>
+        <td><span class="badge">{{.Network}}</span></td>
+        <td class="mono dim">{{short .CurrentWasmHash 16}}</td>
+        <td class="dim">{{.LastRefreshed.UTC.Format "2006-01-02 15:04"}} UTC</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+{{else}}
+  <div class="empty">
+    {{if .Query}}
+      <p>No contract matches “{{.Query}}”.</p>
+    {{else}}
+      <p>No contracts registered yet.</p>
+      <p class="dim">Add one with <code>sorovault add &lt;contract_id&gt;</code>.</p>
+    {{end}}
+  </div>
+{{end}}
+</div>
+{{end}}

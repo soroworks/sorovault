@@ -1,0 +1,27 @@
+{{define "index.html"}}
+{{template "page_head" "SoroVault"}}
+
+<h1>Registered contracts</h1>
+<p class="lede">
+  Every contract SoroVault has fetched and decoded. Search by contract ID or name.
+</p>
+
+{{/* A plain GET form, so search still works with scripting off; htmx
+     upgrades it to swap the table as the user types. */}}
+<form class="search" action="/" method="get"
+      hx-get="/partials/contracts"
+      hx-trigger="input changed delay:250ms from:#q, search from:#q, submit"
+      hx-target="#contract-rows"
+      hx-select="#contract-rows"
+      hx-swap="outerHTML"
+      hx-push-url="true">
+  <input id="q" name="q" type="search" value="{{.Query}}"
+         placeholder="Search contract ID or name…" autocomplete="off" autofocus>
+  {{if .Network}}<input type="hidden" name="network" value="{{.Network}}">{{end}}
+  <button type="submit">Search</button>
+</form>
+
+{{template "contract_rows.html" .}}
+
+{{template "page_foot"}}
+{{end}}
