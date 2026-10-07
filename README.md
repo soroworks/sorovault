@@ -1,5 +1,11 @@
 # SoroVault
 
+[![CI](https://github.com/soroworks/sorovault/actions/workflows/ci.yml/badge.svg)](https://github.com/soroworks/sorovault/actions/workflows/ci.yml)
+[![Security](https://github.com/soroworks/sorovault/actions/workflows/security.yml/badge.svg)](https://github.com/soroworks/sorovault/actions/workflows/security.yml)
+[![Release](https://img.shields.io/github/v/release/soroworks/sorovault)](https://github.com/soroworks/sorovault/releases/latest)
+[![Go](https://img.shields.io/github/go-mod/go-version/soroworks/sorovault)](go.mod)
+[![License](https://img.shields.io/github/license/soroworks/sorovault)](LICENSE)
+
 A contract metadata and interface (ABI) registry for the Stellar/Soroban network.
 
 SoroVault fetches a deployed contract's WASM, decodes the interface embedded in
