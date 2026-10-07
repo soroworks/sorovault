@@ -1,0 +1,14 @@
+# Normalise line endings so the repository stores LF regardless of the platform
+# a contributor works on. Without this, a Windows checkout commits CRLF and
+# every subsequent diff looks like the whole file changed.
+* text=auto eol=lf
+
+# Binary files must never be converted.
+*.wasm binary
+*.png  binary
+*.jpg  binary
+*.gz   binary
+*.zip  binary
+
+# Generated files: keep them out of diff summaries and language statistics.
+go.sum linguist-generated=true
