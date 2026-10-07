@@ -19,3 +19,6 @@ coverage.html
 # Installed by the CI codegen type-check.
 internal/codegen/testdata/node_modules/
 internal/codegen/testdata/package-lock.json
+
+# GoReleaser output.
+/dist/
