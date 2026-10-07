@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
+	"github.com/soroworks/sorovault/internal/codegen"
 	"github.com/soroworks/sorovault/internal/model"
 	"github.com/soroworks/sorovault/internal/registry"
 	"github.com/soroworks/sorovault/internal/store"
@@ -239,6 +241,71 @@ can be piped straight into other tooling.`,
 	cmd.Flags().StringVar(&wasmHash, "wasm-hash", "", "show a specific version instead of the current one")
 	cmd.Flags().StringVar(&function, "function", "", "show only this function")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the ABI as JSON")
+	return cmd
+}
+
+func newCodegenCmd() *cobra.Command {
+	var (
+		network  string
+		wasmHash string
+		lang     string
+		output   string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "codegen <contract_id>",
+		Short: "Generate a typed client for a registered contract",
+		Long: `Generate a typed client from a registered contract's stored interface.
+
+The client is generated from what SoroVault already holds, so no network
+access is needed. --wasm-hash generates against a superseded version.
+
+Only TypeScript is supported today; the output builds on @stellar/stellar-sdk.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if lang != "ts" && lang != "typescript" {
+				return fmt.Errorf("unsupported --lang %q (supported: ts)", lang)
+			}
+			return withApp(cmd.Context(), func(ctx context.Context, a *app) error {
+				net := network
+				if net == "" {
+					var err error
+					if net, err = a.registry.Network(ctx); err != nil {
+						return err
+					}
+				}
+
+				stored, err := a.registry.Store().GetSpec(ctx, net, args[0], wasmHash)
+				if err != nil {
+					return err
+				}
+
+				source, err := codegen.TypeScript(stored.Interface, codegen.Source{
+					ContractID: stored.ContractID,
+					Network:    stored.Network,
+					WasmHash:   stored.WasmHash,
+				})
+				if err != nil {
+					return err
+				}
+
+				if output == "" || output == "-" {
+					_, err = io.WriteString(cmd.OutOrStdout(), source)
+					return err
+				}
+				if err := os.WriteFile(output, []byte(source), 0o644); err != nil {
+					return err
+				}
+				fmt.Fprintf(cmd.ErrOrStderr(), "wrote %s\n", output)
+				return nil
+			})
+		},
+	}
+
+	cmd.Flags().StringVar(&network, "network", "", "network to read from (default: the network RPC_URL serves)")
+	cmd.Flags().StringVar(&wasmHash, "wasm-hash", "", "generate for a specific version instead of the current one")
+	cmd.Flags().StringVar(&lang, "lang", "ts", "target language (ts)")
+	cmd.Flags().StringVarP(&output, "output", "o", "", "write to this file instead of stdout")
 	return cmd
 }
 

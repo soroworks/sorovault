@@ -53,6 +53,7 @@ Configuration is read from the environment:
 		newAddCmd(),
 		newListCmd(),
 		newGetCmd(),
+		newCodegenCmd(),
 		newRefreshCmd(),
 		newServeCmd(),
 		newMigrateCmd(),

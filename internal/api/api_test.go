@@ -414,6 +414,34 @@ func TestRealFixtureServesUsableABI(t *testing.T) {
 	assert.Contains(t, h.decode(t, raw)["signature"], "pub_signals: Vec<BytesN<32>>")
 }
 
+func TestTypeScriptClient(t *testing.T) {
+	t.Parallel()
+
+	module, err := os.ReadFile("../spec/testdata/zkvote.wasm")
+	require.NoError(t, err)
+
+	h := newHarness(t)
+	h.fake.Deploy(idA, module)
+	resp, raw := h.do(t, http.MethodPost, "/api/contracts", `{"contract_id":"`+idA+`"}`)
+	require.Equal(t, http.StatusCreated, resp.StatusCode, string(raw))
+
+	resp, raw = h.do(t, http.MethodGet, "/api/contracts/"+idA+"/client.ts", "")
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(raw))
+	assert.Contains(t, resp.Header.Get("Content-Type"), "text/plain")
+	assert.Empty(t, resp.Header.Get("Content-Disposition"))
+
+	body := string(raw)
+	assert.Contains(t, body, `export const contractId = "`+idA+`";`)
+	assert.Contains(t, body, `export const wasmHash = "`+stellartest.HashOf(module)+`";`)
+	assert.Contains(t, body, "has_voted(args: { nullifier: Buffer }")
+
+	resp, _ = h.do(t, http.MethodGet, "/api/contracts/"+idA+"/client.ts?download=1", "")
+	assert.Equal(t, `attachment; filename="`+idA+`.client.ts"`, resp.Header.Get("Content-Disposition"))
+
+	resp, _ = h.do(t, http.MethodGet, "/api/contracts/"+idB+"/client.ts", "")
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
 // TestInternalErrorsAreNotLeaked checks that an unexpected store failure
 // produces a generic 500 rather than exposing internals to the caller.
 func TestInternalErrorsAreNotLeaked(t *testing.T) {

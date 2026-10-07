@@ -175,6 +175,7 @@ func TestContractPage(t *testing.T) {
 	assert.Contains(t, body, "Voted", "the event should be listed")
 	assert.Contains(t, body, "rssdkver", "build metadata should be shown")
 	assert.Contains(t, body, "current")
+	assert.Contains(t, body, "/api/contracts/"+idA+"/client.ts?", "the typed client should be linked")
 }
 
 // TestContractPageEscapesOutput guards against a contract's own strings

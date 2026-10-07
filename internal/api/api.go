@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/soroworks/sorovault/internal/codegen"
 	"github.com/soroworks/sorovault/internal/registry"
 	"github.com/soroworks/sorovault/internal/spec"
 	"github.com/soroworks/sorovault/internal/stellar"
@@ -46,8 +47,47 @@ func (s *Server) Routes() chi.Router {
 	r.Post("/contracts/{id}/refresh", s.refreshContract)
 	r.Get("/contracts/{id}/versions", s.listVersions)
 	r.Get("/contracts/{id}/functions/{fn}", s.getFunction)
+	r.Get("/contracts/{id}/client.ts", s.getTypeScriptClient)
 
 	return r
+}
+
+// getTypeScriptClient serves GET /api/contracts/{id}/client.ts: a typed
+// TypeScript client for the contract's current interface, or for an older
+// one with ?wasm_hash=. ?download=1 asks the browser to save it.
+func (s *Server) getTypeScriptClient(w http.ResponseWriter, r *http.Request) {
+	contractID := chi.URLParam(r, "id")
+
+	network, err := s.network(r)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+
+	wasmHash := strings.TrimSpace(r.URL.Query().Get("wasm_hash"))
+	stored, err := s.reg.Store().GetSpec(r.Context(), network, contractID, wasmHash)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+
+	source, err := codegen.TypeScript(stored.Interface, codegen.Source{
+		ContractID: stored.ContractID,
+		Network:    stored.Network,
+		WasmHash:   stored.WasmHash,
+	})
+	if err != nil {
+		// The interface decoded, but cannot be expressed as TypeScript —
+		// a property of the contract, not a server fault.
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if r.URL.Query().Get("download") != "" {
+		w.Header().Set("Content-Disposition", `attachment; filename="`+contractID+`.client.ts"`)
+	}
+	_, _ = w.Write([]byte(source))
 }
 
 // Middleware returns the stack the whole server runs behind: a request ID, a

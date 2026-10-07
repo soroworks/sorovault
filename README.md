@@ -162,6 +162,7 @@ closed.
 | `POST` | `/api/contracts` | register a contract — `{"contract_id": "C…"}` |
 | `GET` | `/api/contracts/{id}` | the decoded ABI — `?network=`, `?wasm_hash=` |
 | `GET` | `/api/contracts/{id}/functions/{fn}` | one function in detail |
+| `GET` | `/api/contracts/{id}/client.ts` | typed TypeScript client — `?wasm_hash=`, `?download=1` |
 | `GET` | `/api/contracts/{id}/versions` | every stored interface version |
 | `POST` | `/api/contracts/{id}/refresh` | re-check against the network |
 | `GET` | `/healthz` | liveness |
@@ -193,6 +194,7 @@ sorovault add <contract_id>...      # fetch, decode and register
 sorovault refresh <contract_id>...  # re-check for an upgraded interface
 sorovault list                      # -q, --network, --limit, --offset
 sorovault get <contract_id>         # --function, --wasm-hash, --json
+sorovault codegen <contract_id>     # typed TypeScript client; -o, --wasm-hash
 sorovault serve                     # JSON API + browse UI
 sorovault migrate                   # apply schema migrations
 ```
@@ -210,6 +212,41 @@ inputs:
 
 returns: bool
 ```
+
+## Typed clients
+
+SoroVault generates a typed TypeScript client for any registered contract —
+from the stored interface, so it needs no network access, and for any
+version by `?wasm_hash=`:
+
+```console
+$ sorovault codegen CDZZ…4PAN -o zkvote.ts
+$ curl -s localhost:8080/api/contracts/CDZZ…4PAN/client.ts > zkvote.ts
+```
+
+The file declares every struct, union and enum, an `Errors` code table, and a
+`Client` interface with one method per contract function. `connect()` hands
+back `@stellar/stellar-sdk`'s `contract.Client` narrowed to that interface:
+
+```ts
+import { connect } from "./zkvote";
+
+const client = await connect({
+  rpcUrl: "https://soroban-testnet.stellar.org",
+  networkPassphrase: "Test SDF Network ; September 2015",
+});
+const tx = await client.get_proposal({ index: 0 });   // args and result are typed
+console.log(tx.result);                               // sdk.Result<Proposal>
+```
+
+Type mappings follow the Stellar CLI's own bindings (`u64`→`bigint`,
+`BytesN<32>`→`Buffer`, unions as `{ tag, values }`), so values pass through
+the SDK unchanged. It requires `@stellar/stellar-sdk` 14 or later and
+`buffer`.
+
+CI compiles the generated client for the real testnet fixture with
+`tsc --strict` against a pinned SDK, so a change to the generator that would
+produce broken TypeScript fails the build.
 
 ## The ABI JSON
 
@@ -303,6 +340,7 @@ internal/stellar   RPC client and contract fetch
 internal/store     Postgres registry, migrations, and an in-memory store
 internal/registry  register/refresh orchestration
 internal/refresher scheduled re-checks of registered contracts
+internal/codegen   typed client generation from a stored ABI
 internal/api       chi JSON handlers
 internal/web       html/template + htmx browse UI
 ```
@@ -352,11 +390,10 @@ drift from the real one.
 
 Contributions welcome. Deliberately **not** built yet:
 
-- **SDK / client codegen from the ABI.** The registry already serves everything
-  a generator needs — types are recursive and fully resolved, and UDT
-  references are by name. Generating typed Go, TypeScript or Python clients
-  from `GET /api/contracts/{id}` is the single highest-value thing to build on
-  top of SoroVault, and a great first substantial contribution.
+- **More codegen targets.** TypeScript clients ship today (see
+  [Typed clients](#typed-clients)); Go, Python and Rust generators would
+  slot in beside `internal/codegen/typescript.go`, reusing its golden-file
+  and compile-in-CI test pattern.
 - **Resolving contract names.** The schema carries a `name`, but nothing
   populates it yet.
 Explicitly out of scope: authentication, and any write operation against
