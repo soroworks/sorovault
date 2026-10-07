@@ -1,0 +1,359 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "SoroVault",
+    "summary": "A contract interface (ABI) registry for Stellar/Soroban.",
+    "description": "SoroVault fetches a deployed contract's WASM, decodes the interface embedded in it, versions it by WASM hash, and serves it. The ABI JSON is the project's public contract; `abi_version` is bumped if it ever changes incompatibly.",
+    "license": { "name": "Apache-2.0", "identifier": "Apache-2.0" },
+    "version": "1"
+  },
+  "paths": {
+    "/healthz": {
+      "get": {
+        "summary": "Liveness",
+        "description": "Does not touch the database or RPC.",
+        "operationId": "healthz",
+        "responses": {
+          "200": {
+            "description": "The process is serving.",
+            "content": { "application/json": { "schema": {
+              "type": "object",
+              "properties": { "status": { "const": "ok" }, "version": { "type": "string" } },
+              "required": ["status", "version"]
+            } } }
+          }
+        }
+      }
+    },
+    "/api/contracts": {
+      "get": {
+        "summary": "List or search contracts",
+        "operationId": "listContracts",
+        "parameters": [
+          { "name": "q", "in": "query", "description": "Case-insensitive substring of the contract ID, its name, or a function, type or event name in its current interface.", "schema": { "type": "string" } },
+          { "$ref": "#/components/parameters/network" },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 } },
+          { "name": "offset", "in": "query", "schema": { "type": "integer", "minimum": 0, "default": 0 } }
+        ],
+        "responses": {
+          "200": { "description": "One page of contracts.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ContractList" } } } },
+          "503": { "$ref": "#/components/responses/NetworkMismatch" }
+        }
+      },
+      "post": {
+        "summary": "Register a contract",
+        "description": "Fetches the contract's WASM, decodes its interface and stores it. Idempotent: registering a known contract re-verifies it, and records a new interface version if it was upgraded.",
+        "operationId": "registerContract",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object",
+            "properties": { "contract_id": { "$ref": "#/components/schemas/ContractID" } },
+            "required": ["contract_id"],
+            "additionalProperties": false
+          } } }
+        },
+        "responses": {
+          "201": { "description": "Newly registered.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RegisterResult" } } } },
+          "200": { "description": "Already registered; re-verified.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RegisterResult" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/NoInterface" },
+          "503": { "$ref": "#/components/responses/NetworkMismatch" }
+        }
+      }
+    },
+    "/api/contracts/{id}": {
+      "get": {
+        "summary": "A contract's decoded interface",
+        "operationId": "getContract",
+        "parameters": [
+          { "$ref": "#/components/parameters/id" },
+          { "$ref": "#/components/parameters/network" },
+          { "$ref": "#/components/parameters/wasmHash" }
+        ],
+        "responses": {
+          "200": { "description": "The interface.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ContractInterface" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/contracts/{id}/functions/{fn}": {
+      "get": {
+        "summary": "One function in detail",
+        "operationId": "getFunction",
+        "parameters": [
+          { "$ref": "#/components/parameters/id" },
+          { "name": "fn", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "$ref": "#/components/parameters/network" },
+          { "$ref": "#/components/parameters/wasmHash" }
+        ],
+        "responses": {
+          "200": { "description": "The function.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/FunctionDetail" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/contracts/{id}/versions": {
+      "get": {
+        "summary": "Every stored interface version, newest first",
+        "operationId": "listVersions",
+        "parameters": [{ "$ref": "#/components/parameters/id" }, { "$ref": "#/components/parameters/network" }],
+        "responses": {
+          "200": { "description": "The versions.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/VersionList" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/contracts/{id}/refresh": {
+      "post": {
+        "summary": "Re-check a registered contract against the network",
+        "operationId": "refreshContract",
+        "parameters": [{ "$ref": "#/components/parameters/id" }],
+        "responses": {
+          "200": { "description": "Refreshed. `changed` is true when a new interface version was recorded.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RegisterResult" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/NoInterface" },
+          "503": { "$ref": "#/components/responses/NetworkMismatch" }
+        }
+      }
+    },
+    "/api/contracts/{id}/client.ts": {
+      "get": {
+        "summary": "A typed TypeScript client",
+        "description": "Generated from the stored interface; builds on @stellar/stellar-sdk >= 14.",
+        "operationId": "getTypeScriptClient",
+        "parameters": [
+          { "$ref": "#/components/parameters/id" },
+          { "$ref": "#/components/parameters/network" },
+          { "$ref": "#/components/parameters/wasmHash" },
+          { "name": "download", "in": "query", "description": "Any value sets Content-Disposition: attachment.", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "TypeScript source.", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/NoInterface" }
+        }
+      }
+    },
+    "/api/openapi.json": {
+      "get": {
+        "summary": "This document",
+        "operationId": "getOpenAPI",
+        "responses": { "200": { "description": "The OpenAPI document.", "content": { "application/json": { "schema": { "type": "object" } } } } }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "id": { "name": "id", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/ContractID" } },
+      "network": { "name": "network", "in": "query", "description": "Network namespace, e.g. testnet or public. Defaults to the network this instance's RPC serves.", "schema": { "type": "string" } },
+      "wasmHash": { "name": "wasm_hash", "in": "query", "description": "Select a superseded interface version by WASM hash instead of the current one.", "schema": { "$ref": "#/components/schemas/WasmHash" } }
+    },
+    "responses": {
+      "BadRequest": { "description": "Malformed input, such as an invalid contract ID.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "NotFound": { "description": "No such contract, version or function.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "NoInterface": { "description": "The contract exists but has no interface to serve: a Stellar asset contract, or a module without a contractspecv0 section.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "NetworkMismatch": { "description": "The RPC endpoint serves a different network than NETWORK_PASSPHRASE.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+    },
+    "schemas": {
+      "ContractID": { "type": "string", "pattern": "^C[A-Z2-7]{55}$", "description": "Strkey contract address." },
+      "WasmHash": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "SHA-256 of the contract's WASM module, hex." },
+      "Error": { "type": "object", "properties": { "error": { "type": "string" } }, "required": ["error"] },
+      "Contract": {
+        "type": "object",
+        "properties": {
+          "contract_id": { "$ref": "#/components/schemas/ContractID" },
+          "network": { "type": "string" },
+          "current_wasm_hash": { "$ref": "#/components/schemas/WasmHash" },
+          "name": { "type": "string" },
+          "first_seen": { "type": "string", "format": "date-time" },
+          "last_refreshed": { "type": "string", "format": "date-time" },
+          "matches": { "type": "array", "items": { "type": "string" }, "description": "Interface symbols a search query matched. Only present on search results." }
+        },
+        "required": ["contract_id", "network", "current_wasm_hash", "first_seen", "last_refreshed"]
+      },
+      "ContractList": {
+        "type": "object",
+        "properties": {
+          "contracts": { "type": "array", "items": { "$ref": "#/components/schemas/Contract" } },
+          "total": { "type": "integer", "description": "Matches ignoring paging." },
+          "limit": { "type": "integer" },
+          "offset": { "type": "integer" }
+        },
+        "required": ["contracts", "total", "limit", "offset"]
+      },
+      "RegisterResult": {
+        "type": "object",
+        "properties": {
+          "contract": { "$ref": "#/components/schemas/Contract" },
+          "interface": { "$ref": "#/components/schemas/Interface" },
+          "created": { "type": "boolean" },
+          "changed": { "type": "boolean", "description": "A new interface version was recorded." }
+        },
+        "required": ["contract", "created", "changed"]
+      },
+      "ContractInterface": {
+        "type": "object",
+        "properties": {
+          "contract_id": { "$ref": "#/components/schemas/ContractID" },
+          "network": { "type": "string" },
+          "wasm_hash": { "$ref": "#/components/schemas/WasmHash" },
+          "name": { "type": "string" },
+          "first_seen": { "type": "string", "format": "date-time" },
+          "decoded_at": { "type": "string", "format": "date-time" },
+          "current": { "type": "boolean", "description": "False when an older version was requested with wasm_hash." },
+          "interface": { "$ref": "#/components/schemas/Interface" }
+        },
+        "required": ["contract_id", "network", "wasm_hash", "first_seen", "decoded_at", "current", "interface"]
+      },
+      "FunctionDetail": {
+        "type": "object",
+        "properties": {
+          "contract_id": { "$ref": "#/components/schemas/ContractID" },
+          "network": { "type": "string" },
+          "wasm_hash": { "$ref": "#/components/schemas/WasmHash" },
+          "signature": { "type": "string", "examples": ["fn has_voted(nullifier: BytesN<32>) -> bool"] },
+          "function": { "$ref": "#/components/schemas/Function" }
+        },
+        "required": ["contract_id", "network", "wasm_hash", "signature", "function"]
+      },
+      "VersionList": {
+        "type": "object",
+        "properties": {
+          "contract_id": { "$ref": "#/components/schemas/ContractID" },
+          "network": { "type": "string" },
+          "versions": { "type": "array", "items": {
+            "type": "object",
+            "properties": {
+              "wasm_hash": { "$ref": "#/components/schemas/WasmHash" },
+              "decoded_at": { "type": "string", "format": "date-time" },
+              "current": { "type": "boolean" }
+            },
+            "required": ["wasm_hash", "decoded_at", "current"]
+          } }
+        },
+        "required": ["contract_id", "network", "versions"]
+      },
+      "Interface": {
+        "type": "object",
+        "description": "A contract's decoded interface. Empty collections are [], never null.",
+        "properties": {
+          "abi_version": { "const": "1" },
+          "meta": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Build metadata from contractmetav0 (rsver, rssdkver). Omitted when absent." },
+          "functions": { "type": "array", "items": { "$ref": "#/components/schemas/Function" } },
+          "types": {
+            "type": "object",
+            "properties": {
+              "structs": { "type": "array", "items": { "$ref": "#/components/schemas/Struct" } },
+              "unions": { "type": "array", "items": { "$ref": "#/components/schemas/Union" } },
+              "enums": { "type": "array", "items": { "$ref": "#/components/schemas/Enum" } },
+              "error_enums": { "type": "array", "items": { "$ref": "#/components/schemas/Enum" } }
+            },
+            "required": ["structs", "unions", "enums", "error_enums"]
+          },
+          "events": { "type": "array", "items": { "$ref": "#/components/schemas/Event" } }
+        },
+        "required": ["abi_version", "functions", "types", "events"]
+      },
+      "Function": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "doc": { "type": "string" },
+          "inputs": { "type": "array", "items": { "$ref": "#/components/schemas/Param" } },
+          "outputs": { "type": "array", "maxItems": 1, "items": { "$ref": "#/components/schemas/Type" }, "description": "Empty means the function returns nothing." }
+        },
+        "required": ["name", "inputs", "outputs"]
+      },
+      "Param": {
+        "type": "object",
+        "properties": { "name": { "type": "string" }, "doc": { "type": "string" }, "type": { "$ref": "#/components/schemas/Type" } },
+        "required": ["name", "type"]
+      },
+      "Type": {
+        "type": "object",
+        "description": "A value type. Scalars carry only kind and display; containers add the fields their kind needs.",
+        "properties": {
+          "kind": { "enum": ["val", "bool", "void", "error", "u32", "i32", "u64", "i64", "timepoint", "duration", "u128", "i128", "u256", "i256", "bytes", "string", "symbol", "address", "muxed_address", "option", "result", "vec", "map", "tuple", "bytes_n", "udt"] },
+          "display": { "type": "string", "examples": ["Option<Vec<u32>>"] },
+          "inner": { "$ref": "#/components/schemas/Type", "description": "option" },
+          "element": { "$ref": "#/components/schemas/Type", "description": "vec" },
+          "key": { "$ref": "#/components/schemas/Type", "description": "map" },
+          "value": { "$ref": "#/components/schemas/Type", "description": "map" },
+          "ok": { "$ref": "#/components/schemas/Type", "description": "result" },
+          "error": { "$ref": "#/components/schemas/Type", "description": "result" },
+          "elements": { "type": "array", "items": { "$ref": "#/components/schemas/Type" }, "description": "tuple" },
+          "n": { "type": "integer", "description": "bytes_n length" },
+          "name": { "type": "string", "description": "udt: the referenced type's name" }
+        },
+        "required": ["kind", "display"]
+      },
+      "Struct": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "doc": { "type": "string" },
+          "lib": { "type": "string" },
+          "fields": { "type": "array", "items": { "$ref": "#/components/schemas/Param" } },
+          "is_tuple": { "type": "boolean", "description": "A Rust tuple struct; fields are named \"0\", \"1\", ..." }
+        },
+        "required": ["name", "fields", "is_tuple"]
+      },
+      "Union": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "doc": { "type": "string" },
+          "lib": { "type": "string" },
+          "cases": { "type": "array", "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "doc": { "type": "string" },
+              "values": { "type": "array", "items": { "$ref": "#/components/schemas/Type" } }
+            },
+            "required": ["name", "values"]
+          } }
+        },
+        "required": ["name", "cases"]
+      },
+      "Enum": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "doc": { "type": "string" },
+          "lib": { "type": "string" },
+          "cases": { "type": "array", "items": {
+            "type": "object",
+            "properties": { "name": { "type": "string" }, "doc": { "type": "string" }, "value": { "type": "integer", "minimum": 0 } },
+            "required": ["name", "value"]
+          } }
+        },
+        "required": ["name", "cases"]
+      },
+      "Event": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "doc": { "type": "string" },
+          "lib": { "type": "string" },
+          "prefix_topics": { "type": "array", "items": { "type": "string" } },
+          "params": { "type": "array", "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "doc": { "type": "string" },
+              "type": { "$ref": "#/components/schemas/Type" },
+              "location": { "enum": ["topic-list", "data"] }
+            },
+            "required": ["name", "type", "location"]
+          } },
+          "data_format": { "enum": ["single-value", "vec", "map"] }
+        },
+        "required": ["name", "params", "data_format"]
+      }
+    }
+  }
+}

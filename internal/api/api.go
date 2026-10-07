@@ -7,6 +7,7 @@
 package api
 
 import (
+	_ "embed"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -48,8 +49,21 @@ func (s *Server) Routes() chi.Router {
 	r.Get("/contracts/{id}/versions", s.listVersions)
 	r.Get("/contracts/{id}/functions/{fn}", s.getFunction)
 	r.Get("/contracts/{id}/client.ts", s.getTypeScriptClient)
+	r.Get("/openapi.json", serveOpenAPI)
 
 	return r
+}
+
+// openAPISpec describes every route above. TestOpenAPICoversEveryRoute
+// fails if a route is added without documenting it, or documented without
+// existing.
+//
+//go:embed openapi.json
+var openAPISpec []byte
+
+func serveOpenAPI(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_, _ = w.Write(openAPISpec)
 }
 
 // getTypeScriptClient serves GET /api/contracts/{id}/client.ts: a typed

@@ -163,6 +163,7 @@ closed.
 | `GET` | `/api/contracts/{id}` | the decoded ABI — `?network=`, `?wasm_hash=` |
 | `GET` | `/api/contracts/{id}/functions/{fn}` | one function in detail |
 | `GET` | `/api/contracts/{id}/client.ts` | typed TypeScript client — `?wasm_hash=`, `?download=1` |
+| `GET` | `/api/openapi.json` | OpenAPI 3.1 description of this API |
 | `GET` | `/api/contracts/{id}/versions` | every stored interface version |
 | `POST` | `/api/contracts/{id}/refresh` | re-check against the network |
 | `GET` | `/healthz` | liveness |
