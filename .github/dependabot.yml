@@ -1,0 +1,26 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    # One PR for routine bumps rather than one per module.
+    groups:
+      go-minor-and-patch:
+        update-types: [minor, patch]
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # The pinned SDK the codegen type-check compiles against. Bumping it is how
+  # we learn that a new @stellar/stellar-sdk breaks generated clients.
+  - package-ecosystem: npm
+    directory: /internal/codegen/testdata
+    schedule:
+      interval: weekly
