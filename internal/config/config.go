@@ -36,7 +36,16 @@ type Config struct {
 	LogLevel slog.Level
 	// RPCTimeout bounds a single contract fetch.
 	RPCTimeout time.Duration
+	// RefreshInterval, when positive, makes `serve` re-check every
+	// registered contract that has not been refreshed within it. Zero turns
+	// automatic refresh off.
+	RefreshInterval time.Duration
 }
+
+// MinRefreshInterval is the shortest REFRESH_INTERVAL accepted. Below it a
+// sweep over a large registry could still be running when the next is due,
+// and a public RPC endpoint would see it as abuse.
+const MinRefreshInterval = time.Minute
 
 // Load reads configuration from the process environment.
 //
@@ -66,6 +75,18 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("config: RPC_TIMEOUT must be positive, got %s", d)
 		}
 		cfg.RPCTimeout = d
+	}
+
+	if raw := os.Getenv("REFRESH_INTERVAL"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("config: REFRESH_INTERVAL %q: %w", raw, err)
+		}
+		if d != 0 && d < MinRefreshInterval {
+			return nil, fmt.Errorf("config: REFRESH_INTERVAL must be 0 (off) or at least %s, got %s",
+				MinRefreshInterval, d)
+		}
+		cfg.RefreshInterval = d
 	}
 
 	if cfg.DatabaseURL == "" {

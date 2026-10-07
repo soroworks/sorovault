@@ -20,7 +20,7 @@ func setEnv(t *testing.T, vars map[string]string) {
 
 	for _, key := range []string{
 		"RPC_URL", "NETWORK_PASSPHRASE", "DATABASE_URL",
-		"HTTP_ADDR", "LOG_LEVEL", "RPC_TIMEOUT",
+		"HTTP_ADDR", "LOG_LEVEL", "RPC_TIMEOUT", "REFRESH_INTERVAL",
 	} {
 		if v, ok := vars[key]; ok {
 			t.Setenv(key, v)
@@ -42,6 +42,7 @@ func TestLoadDefaults(t *testing.T) {
 	assert.Equal(t, testDatabaseURL, cfg.DatabaseURL)
 	assert.Equal(t, slog.LevelInfo, cfg.LogLevel)
 	assert.Equal(t, config.DefaultRPCTimeout, cfg.RPCTimeout)
+	assert.Zero(t, cfg.RefreshInterval, "automatic refresh is opt-in")
 }
 
 func TestLoadOverrides(t *testing.T) {
@@ -52,10 +53,12 @@ func TestLoadOverrides(t *testing.T) {
 		"HTTP_ADDR":          "127.0.0.1:9999",
 		"LOG_LEVEL":          "debug",
 		"RPC_TIMEOUT":        "90s",
+		"REFRESH_INTERVAL":   "6h",
 	})
 
 	cfg, err := config.Load()
 	require.NoError(t, err)
+	assert.Equal(t, 6*time.Hour, cfg.RefreshInterval)
 
 	assert.Equal(t, "https://rpc.example.test", cfg.RPCURL)
 	assert.Equal(t, "Public Global Stellar Network ; September 2015", cfg.NetworkPassphrase)
@@ -122,6 +125,21 @@ func TestInvalidValues(t *testing.T) {
 			name:    "negative timeout",
 			vars:    map[string]string{"DATABASE_URL": testDatabaseURL, "RPC_TIMEOUT": "-5s"},
 			wantErr: "must be positive",
+		},
+		{
+			name:    "unparseable refresh interval",
+			vars:    map[string]string{"DATABASE_URL": testDatabaseURL, "REFRESH_INTERVAL": "daily"},
+			wantErr: "REFRESH_INTERVAL",
+		},
+		{
+			name:    "refresh interval below minimum",
+			vars:    map[string]string{"DATABASE_URL": testDatabaseURL, "REFRESH_INTERVAL": "5s"},
+			wantErr: "at least",
+		},
+		{
+			name:    "negative refresh interval",
+			vars:    map[string]string{"DATABASE_URL": testDatabaseURL, "REFRESH_INTERVAL": "-1h"},
+			wantErr: "at least",
 		},
 	}
 

@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/soroworks/sorovault/internal/api"
+	"github.com/soroworks/sorovault/internal/refresher"
 	"github.com/soroworks/sorovault/internal/registry"
 	"github.com/soroworks/sorovault/internal/web"
 )
@@ -45,6 +46,14 @@ func newServeCmd() *cobra.Command {
 					return err
 				}
 
+				stopRefresh, err := startRefresher(ctx, a)
+				if err != nil {
+					return err
+				}
+				// Stopped before withApp closes the store, so a sweep is
+				// never left writing to a closed pool.
+				defer stopRefresh()
+
 				return serve(ctx, listenAddr, handler, a.log)
 			})
 		},
@@ -52,6 +61,37 @@ func newServeCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&addr, "addr", "", "listen address (overrides HTTP_ADDR)")
 	return cmd
+}
+
+// startRefresher runs automatic refresh in the background when
+// REFRESH_INTERVAL is set. The returned function cancels it and waits for an
+// in-progress sweep to finish; it is safe to call when refresh is off.
+func startRefresher(ctx context.Context, a *app) (stop func(), err error) {
+	if a.cfg.RefreshInterval <= 0 {
+		return func() {}, nil
+	}
+
+	r, err := refresher.New(a.registry, refresher.Options{
+		Interval: a.cfg.RefreshInterval,
+		Timeout:  a.cfg.RPCTimeout,
+		Logger:   a.log.With("component", "refresher"),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = r.Run(ctx)
+	}()
+
+	a.log.Info("automatic refresh enabled", "interval", a.cfg.RefreshInterval)
+	return func() {
+		cancel()
+		<-done
+	}, nil
 }
 
 // newRouter assembles the JSON API, the browse UI and the health endpoint

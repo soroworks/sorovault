@@ -135,10 +135,24 @@ All configuration is environment variables. Only `DATABASE_URL` is required.
 | `HTTP_ADDR` | `:8080` | listen address |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `RPC_TIMEOUT` | `30s` | bound on a single contract fetch |
+| `REFRESH_INTERVAL` | `0` (off) | re-check registered contracts this often while serving; minimum `1m` |
 
 `NETWORK_PASSPHRASE` is a guard, not a source of truth. SoroVault reads the real
 passphrase from the RPC endpoint and refuses to proceed if the two disagree, so
 a stale `RPC_URL` cannot quietly file mainnet contracts under `testnet`.
+
+### Automatic refresh
+
+Set `REFRESH_INTERVAL` (for example `6h`) and `sorovault serve` re-checks, on
+that schedule, every contract on its network that has not been refreshed
+within the interval. An upgraded contract gets a new interface version
+exactly as `POST /api/contracts/{id}/refresh` would record it; an unchanged
+one costs a single `getLedgerEntries` call and is not re-downloaded.
+
+A contract that fails to refresh — expired, or an RPC error — is logged and
+skipped, and the sweep carries on. One sweep runs at startup and then one per
+interval; a sweep in progress at shutdown is cancelled before the database is
+closed.
 
 ## HTTP API
 
@@ -276,6 +290,7 @@ internal/spec      contract spec decoding: XDR -> model
 internal/stellar   RPC client and contract fetch
 internal/store     Postgres registry, migrations, and an in-memory store
 internal/registry  register/refresh orchestration
+internal/refresher scheduled re-checks of registered contracts
 internal/api       chi JSON handlers
 internal/web       html/template + htmx browse UI
 ```
@@ -330,9 +345,6 @@ Contributions welcome. Deliberately **not** built yet:
   references are by name. Generating typed Go, TypeScript or Python clients
   from `GET /api/contracts/{id}` is the single highest-value thing to build on
   top of SoroVault, and a great first substantial contribution.
-- **Automatic refresh.** Refresh is manual today. A background poller that
-  re-checks contracts on a schedule would need little more than a loop over
-  `registry.Refresh`.
 - **Resolving contract names.** The schema carries a `name`, but nothing
   populates it yet.
 - **Full-text search.** Search is a substring match on ID and name. Searching
