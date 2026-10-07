@@ -279,6 +279,76 @@ func runStoreSuite(t *testing.T, newStore factory) {
 		assert.Equal(t, 1, page.Total)
 	})
 
+	t.Run("search matches interface symbols", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+
+		rich := iface("get_proposal")
+		rich.Functions = append(rich.Functions, model.Function{Name: "vote"})
+		rich.Types.Structs = []model.Struct{{Name: "Proposal", Fields: []model.StructField{}}}
+		rich.Events = []model.Event{{Name: "Voted", Params: []model.EventParam{}}}
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h1"), rich))
+		require.NoError(t, s.Save(ctx, contract(idB, "testnet", "h2"), iface("transfer")))
+
+		page, err := s.ListContracts(ctx, store.ListFilter{Query: "PROPOSAL"})
+		require.NoError(t, err)
+		require.Equal(t, 1, page.Total)
+		assert.Equal(t, idA, page.Contracts[0].ContractID)
+		assert.Equal(t, []string{"Proposal", "get_proposal"}, page.Contracts[0].Matches)
+
+		page, err = s.ListContracts(ctx, store.ListFilter{Query: "vote"})
+		require.NoError(t, err)
+		require.Equal(t, 1, page.Total)
+		assert.Equal(t, []string{"Voted", "vote"}, page.Contracts[0].Matches,
+			"events are searchable too")
+	})
+
+	t.Run("search uses only the current interface", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h1"), iface("legacy_mint")))
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h2"), iface("mint")))
+
+		page, err := s.ListContracts(ctx, store.ListFilter{Query: "legacy"})
+		require.NoError(t, err)
+		assert.Zero(t, page.Total, "a function removed by an upgrade must stop matching")
+
+		page, err = s.ListContracts(ctx, store.ListFilter{Query: "mint"})
+		require.NoError(t, err)
+		require.Equal(t, 1, page.Total)
+		assert.Equal(t, []string{"mint"}, page.Contracts[0].Matches)
+	})
+
+	t.Run("an id match carries no symbol matches", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h1"), iface("f")))
+
+		page, err := s.ListContracts(ctx, store.ListFilter{Query: idA[:10]})
+		require.NoError(t, err)
+		require.Equal(t, 1, page.Total)
+		assert.Empty(t, page.Contracts[0].Matches)
+
+		page, err = s.ListContracts(ctx, store.ListFilter{})
+		require.NoError(t, err)
+		assert.Empty(t, page.Contracts[0].Matches, "an unfiltered listing reports no matches")
+	})
+
+	t.Run("symbol search total is stable past the last page", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h1"), iface("swap")))
+		require.NoError(t, s.Save(ctx, contract(idB, "testnet", "h2"), iface("swap_exact")))
+
+		page, err := s.ListContracts(ctx, store.ListFilter{Query: "swap", Offset: 10})
+		require.NoError(t, err)
+		assert.Empty(t, page.Contracts)
+		assert.Equal(t, 2, page.Total)
+	})
+
 	t.Run("wildcards in a query are literal", func(t *testing.T) {
 		s := newStore(t)
 		ctx := context.Background()

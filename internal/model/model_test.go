@@ -177,6 +177,27 @@ func TestInterfaceFunction(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestInterfaceSymbolNames(t *testing.T) {
+	t.Parallel()
+
+	iface := &model.Interface{
+		Functions: []model.Function{{Name: "vote"}, {Name: "get_proposal"}},
+		Types: model.Types{
+			Structs:    []model.Struct{{Name: "Proposal"}},
+			Unions:     []model.Union{{Name: "DataKey"}},
+			Enums:      []model.Enum{{Name: "Status"}},
+			ErrorEnums: []model.ErrorEnum{{Name: "Error"}},
+		},
+		// An event sharing a name with a function is listed once.
+		Events: []model.Event{{Name: "vote"}, {Name: "Voted"}},
+	}
+
+	assert.Equal(t,
+		[]string{"DataKey", "Error", "Proposal", "Status", "Voted", "get_proposal", "vote"},
+		iface.SymbolNames())
+	assert.Empty(t, (&model.Interface{}).SymbolNames())
+}
+
 // TestJSONShape pins the wire format, since the ABI JSON is the project's
 // public contract and other tools are expected to parse it.
 func TestJSONShape(t *testing.T) {

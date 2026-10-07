@@ -132,6 +132,14 @@ func TestSearch(t *testing.T) {
 		_, body := h.get(t, "/?q=nothing-matches")
 		assert.Contains(t, body, "No contract matches")
 	})
+
+	t.Run("by function name shows what matched", func(t *testing.T) {
+		// The zkvote fixture declares has_voted and vote.
+		_, body := h.get(t, "/?q=voted")
+		assert.Contains(t, body, idA)
+		assert.Contains(t, body, idB)
+		assert.Contains(t, body, "<code>has_voted</code>")
+	})
 }
 
 // TestPartialIsAFragment checks the htmx endpoint returns just the swappable

@@ -17,6 +17,7 @@
         <td>
           <a class="mono" href="/contracts/{{.ContractID}}?network={{.Network}}">{{.ContractID}}</a>
           {{if .Name}}<div class="name">{{.Name}}</div>{{end}}
+          {{if .Matches}}<div class="matches">matches {{range $i, $m := .Matches}}{{if $i}}, {{end}}<code>{{$m}}</code>{{end}}</div>{{end}}
         </td>
         <td><span class="badge">{{.Network}}</span></td>
         <td class="mono dim">{{short .CurrentWasmHash 16}}</td>

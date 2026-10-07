@@ -80,11 +80,14 @@ func (p *Postgres) Save(ctx context.Context, c Contract, iface *model.Interface)
 	// Re-registering an unchanged contract must not append a duplicate
 	// version, so a repeat hash refreshes the existing row in place.
 	const insertSpec = `
-		INSERT INTO specs (network, contract_id, wasm_hash, spec)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (network, contract_id, wasm_hash) DO UPDATE SET spec = EXCLUDED.spec`
+		INSERT INTO specs (network, contract_id, wasm_hash, spec, symbols)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (network, contract_id, wasm_hash) DO UPDATE SET
+			spec    = EXCLUDED.spec,
+			symbols = EXCLUDED.symbols`
 
-	if _, err := tx.Exec(ctx, insertSpec, c.Network, c.ContractID, c.CurrentWasmHash, body); err != nil {
+	if _, err := tx.Exec(ctx, insertSpec,
+		c.Network, c.ContractID, c.CurrentWasmHash, body, joinSymbols(iface)); err != nil {
 		return fmt.Errorf("store: saving spec for %s: %w", c.ContractID, err)
 	}
 
@@ -122,15 +125,23 @@ func (p *Postgres) ListContracts(ctx context.Context, f ListFilter) (*ContractPa
 	// $1 empty means "any network", $2 empty means "any text" — expressing
 	// both as SQL keeps this a single prepared statement rather than
 	// concatenated fragments.
+	// Symbols come from the spec the contract currently runs, so a function
+	// removed by an upgrade stops matching.
 	const q = `
 		WITH matched AS (
-			SELECT network, contract_id, current_wasm_hash, name, first_seen, last_refreshed
-			FROM contracts
-			WHERE ($1 = '' OR network = $1)
-			  AND ($2 = '' OR contract_id ILIKE '%' || $2 || '%' OR name ILIKE '%' || $2 || '%')
+			SELECT c.network, c.contract_id, c.current_wasm_hash, c.name,
+			       c.first_seen, c.last_refreshed, COALESCE(s.symbols, '') AS symbols
+			FROM contracts c
+			LEFT JOIN specs s
+			  ON s.network = c.network AND s.contract_id = c.contract_id
+			 AND s.wasm_hash = c.current_wasm_hash
+			WHERE ($1 = '' OR c.network = $1)
+			  AND ($2 = '' OR c.contract_id ILIKE '%' || $2 || '%'
+			               OR c.name ILIKE '%' || $2 || '%'
+			               OR s.symbols ILIKE '%' || $2 || '%')
 		)
 		SELECT network, contract_id, current_wasm_hash, name, first_seen, last_refreshed,
-		       count(*) OVER () AS total
+		       symbols, count(*) OVER () AS total
 		FROM matched
 		ORDER BY last_refreshed DESC, contract_id
 		LIMIT $3 OFFSET $4`
@@ -144,13 +155,15 @@ func (p *Postgres) ListContracts(ctx context.Context, f ListFilter) (*ContractPa
 	page := &ContractPage{Contracts: []Contract{}}
 	for rows.Next() {
 		var c Contract
+		var symbols string
 		var total int
 		if err := rows.Scan(
 			&c.Network, &c.ContractID, &c.CurrentWasmHash, &c.Name,
-			&c.FirstSeen, &c.LastRefreshed, &total,
+			&c.FirstSeen, &c.LastRefreshed, &symbols, &total,
 		); err != nil {
 			return nil, fmt.Errorf("store: scanning contract: %w", err)
 		}
+		c.Matches = matchSymbols(symbols, f.Query)
 		page.Contracts = append(page.Contracts, c)
 		page.Total = total
 	}
@@ -172,10 +185,18 @@ func (p *Postgres) ListContracts(ctx context.Context, f ListFilter) (*ContractPa
 }
 
 func (p *Postgres) countContracts(ctx context.Context, f ListFilter) (int, error) {
+	// Must mirror ListContracts' predicate, or a page past the end would
+	// report a different total from the pages before it.
 	const q = `
-		SELECT count(*) FROM contracts
-		WHERE ($1 = '' OR network = $1)
-		  AND ($2 = '' OR contract_id ILIKE '%' || $2 || '%' OR name ILIKE '%' || $2 || '%')`
+		SELECT count(*)
+		FROM contracts c
+		LEFT JOIN specs s
+		  ON s.network = c.network AND s.contract_id = c.contract_id
+		 AND s.wasm_hash = c.current_wasm_hash
+		WHERE ($1 = '' OR c.network = $1)
+		  AND ($2 = '' OR c.contract_id ILIKE '%' || $2 || '%'
+		               OR c.name ILIKE '%' || $2 || '%'
+		               OR s.symbols ILIKE '%' || $2 || '%')`
 
 	var total int
 	if err := p.pool.QueryRow(ctx, q, f.Network, escapeLike(f.Query)).Scan(&total); err != nil {

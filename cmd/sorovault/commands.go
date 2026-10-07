@@ -156,11 +156,12 @@ func newListCmd() *cobra.Command {
 				}
 
 				tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-				fmt.Fprintln(tw, "CONTRACT ID\tNETWORK\tWASM HASH\tLAST REFRESHED")
+				fmt.Fprintln(tw, "CONTRACT ID\tNETWORK\tWASM HASH\tLAST REFRESHED\tMATCHES")
 				for _, c := range page.Contracts {
-					fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n",
+					fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
 						c.ContractID, c.Network, truncate(c.CurrentWasmHash, 12),
-						c.LastRefreshed.UTC().Format("2006-01-02 15:04"))
+						c.LastRefreshed.UTC().Format("2006-01-02 15:04"),
+						strings.Join(c.Matches, ","))
 				}
 				if err := tw.Flush(); err != nil {
 					return err
@@ -172,7 +173,7 @@ func newListCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVarP(&query, "query", "q", "", "filter by contract ID or name substring")
+	cmd.Flags().StringVarP(&query, "query", "q", "", "search contract ID, name, and function, type and event names")
 	cmd.Flags().StringVar(&network, "network", "", "restrict to one network")
 	cmd.Flags().IntVar(&limit, "limit", store.DefaultLimit, "maximum rows to return")
 	cmd.Flags().IntVar(&offset, "offset", 0, "rows to skip")

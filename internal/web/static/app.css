@@ -199,6 +199,7 @@ table { width: 100%; border-collapse: collapse; }
 .dim { color: var(--dim); }
 .break { word-break: break-all; }
 .name { color: var(--dim); font-size: .82rem; margin-top: .15rem; }
+.matches { color: var(--dim); font-size: .78rem; margin-top: .2rem; }
 .count { color: var(--dim); font-size: .85rem; margin: 0 0 .6rem; }
 
 .badge {

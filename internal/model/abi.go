@@ -7,6 +7,8 @@
 // them cheaply.
 package model
 
+import "sort"
+
 // ABIVersion is the schema version of the JSON emitted by this package.
 // It is bumped when a change would break existing consumers.
 const ABIVersion = "1"
@@ -146,4 +148,41 @@ func (i *Interface) Function(name string) (Function, bool) {
 		}
 	}
 	return Function{}, false
+}
+
+// SymbolNames lists the names the interface declares at the top level:
+// functions, user-defined types and events. It is sorted and free of
+// duplicates, and is what registry search matches against.
+func (i *Interface) SymbolNames() []string {
+	seen := make(map[string]bool)
+	add := func(name string) {
+		if name != "" {
+			seen[name] = true
+		}
+	}
+	for _, fn := range i.Functions {
+		add(fn.Name)
+	}
+	for _, s := range i.Types.Structs {
+		add(s.Name)
+	}
+	for _, u := range i.Types.Unions {
+		add(u.Name)
+	}
+	for _, e := range i.Types.Enums {
+		add(e.Name)
+	}
+	for _, e := range i.Types.ErrorEnums {
+		add(e.Name)
+	}
+	for _, ev := range i.Events {
+		add(ev.Name)
+	}
+
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

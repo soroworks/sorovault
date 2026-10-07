@@ -170,6 +170,18 @@ closed.
 it was already registered, so it is safe to retry. Passing `?wasm_hash=` to a
 read selects a superseded version instead of the current one.
 
+**Search.** `?q=` is a case-insensitive substring match against the contract
+ID, its name, and the names of every function, type and event in the
+contract's **current** interface — so `?q=transfer` finds every token-like
+contract in the registry. When a symbol matched, the listing says which:
+
+```json
+{ "contract_id": "CDZZ…4PAN", "network": "testnet", "matches": ["has_voted", "vote"] }
+```
+
+A function removed by an upgrade stops matching; older versions stay
+retrievable by hash but are not searched.
+
 Status codes worth knowing: **422** means the contract exists but has no
 interface to serve (a Stellar asset contract, or a module with no spec section),
 as distinct from **404**, which means it is not there at all.
@@ -347,9 +359,6 @@ Contributions welcome. Deliberately **not** built yet:
   top of SoroVault, and a great first substantial contribution.
 - **Resolving contract names.** The schema carries a `name`, but nothing
   populates it yet.
-- **Full-text search.** Search is a substring match on ID and name. Searching
-  across function and type names would mean indexing the stored jsonb.
-
 Explicitly out of scope: authentication, and any write operation against
 contracts themselves. SoroVault reads chain state; it never sends a transaction.
 

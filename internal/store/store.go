@@ -27,6 +27,39 @@ type Contract struct {
 	Name            string    `json:"name,omitempty"`
 	FirstSeen       time.Time `json:"first_seen"`
 	LastRefreshed   time.Time `json:"last_refreshed"`
+
+	// Matches lists the interface symbols — functions, types, events — that
+	// a search query matched. It is only set on search results, and is
+	// empty when the query matched the contract ID or name instead.
+	Matches []string `json:"matches,omitempty"`
+}
+
+// symbolSeparator joins symbol names into the single searchable string the
+// Postgres store keeps per spec. A newline cannot appear in a symbol, and a
+// query cannot contain one once trimmed, so a substring match can never
+// straddle two names.
+const symbolSeparator = "\n"
+
+// joinSymbols renders an interface's symbol names for storage.
+func joinSymbols(iface *model.Interface) string {
+	return strings.Join(iface.SymbolNames(), symbolSeparator)
+}
+
+// matchSymbols returns the names in a joined symbol string that contain
+// query, compared case-insensitively. Both stores use it so they report
+// identical matches.
+func matchSymbols(joined, query string) []string {
+	if query == "" || joined == "" {
+		return nil
+	}
+	needle := strings.ToLower(query)
+	var out []string
+	for _, name := range strings.Split(joined, symbolSeparator) {
+		if strings.Contains(strings.ToLower(name), needle) {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // Spec is one decoded interface version of a contract.
@@ -51,8 +84,9 @@ type SpecVersion struct {
 type ListFilter struct {
 	// Network restricts results to one network. Empty means all networks.
 	Network string
-	// Query is a case-insensitive substring match against contract ID and
-	// name. Empty matches everything.
+	// Query is a case-insensitive substring match against contract ID,
+	// name, and the names of the functions, types and events in the
+	// contract's current interface. Empty matches everything.
 	Query string
 	// Limit is the maximum number of rows to return. Zero means
 	// DefaultLimit; anything above MaxLimit is clamped to MaxLimit.

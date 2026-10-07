@@ -16,7 +16,7 @@
       hx-swap="outerHTML"
       hx-push-url="true">
   <input id="q" name="q" type="search" value="{{.Query}}"
-         placeholder="Search contract ID or name…" autocomplete="off" autofocus>
+         placeholder="Search contract ID, name, function or type…" autocomplete="off" autofocus>
   {{if .Network}}<input type="hidden" name="network" value="{{.Network}}">{{end}}
   <button type="submit">Search</button>
 </form>

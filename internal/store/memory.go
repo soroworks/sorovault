@@ -137,14 +137,17 @@ func (m *Memory) ListContracts(ctx context.Context, f ListFilter) (*ContractPage
 
 	matched := make([]Contract, 0, len(m.contracts))
 	needle := strings.ToLower(f.Query)
-	for _, c := range m.contracts {
+	for k, c := range m.contracts {
 		if f.Network != "" && c.Network != f.Network {
 			continue
 		}
-		if needle != "" &&
-			!strings.Contains(strings.ToLower(c.ContractID), needle) &&
-			!strings.Contains(strings.ToLower(c.Name), needle) {
-			continue
+		if needle != "" {
+			c.Matches = matchSymbols(m.currentSymbols(k, c.CurrentWasmHash), f.Query)
+			if len(c.Matches) == 0 &&
+				!strings.Contains(strings.ToLower(c.ContractID), needle) &&
+				!strings.Contains(strings.ToLower(c.Name), needle) {
+				continue
+			}
 		}
 		matched = append(matched, c)
 	}
@@ -162,6 +165,17 @@ func (m *Memory) ListContracts(ctx context.Context, f ListFilter) (*ContractPage
 		page.Contracts = append(page.Contracts, matched[f.Offset:end]...)
 	}
 	return page, nil
+}
+
+// currentSymbols returns the joined symbol names of the spec a contract
+// currently runs. The caller holds m.mu.
+func (m *Memory) currentSymbols(k, wasmHash string) string {
+	for _, s := range m.specs[k] {
+		if s.WasmHash == wasmHash {
+			return joinSymbols(s.Interface)
+		}
+	}
+	return ""
 }
 
 // GetSpec returns a stored interface, defaulting to the contract's current
