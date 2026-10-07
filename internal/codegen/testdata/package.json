@@ -1,0 +1,13 @@
+{
+  "name": "sorovault-codegen-typecheck",
+  "private": true,
+  "description": "Type-checks the golden generated client against the real Stellar SDK. Run by CI; see .github/workflows/ci.yml.",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@stellar/stellar-sdk": "17.2.1",
+    "buffer": "6.0.3",
+    "typescript": "7.0.2"
+  }
+}

@@ -70,6 +70,23 @@ jobs:
           go mod tidy
           git diff --exit-code go.mod go.sum
 
+  # The Go tests prove the generated client is stable; this proves it
+  # compiles, strictly, against the SDK it targets.
+  codegen-typecheck:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: internal/codegen/testdata
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install the SDK and compiler
+        run: npm install --no-audit --no-fund
+      - name: Type-check the golden client
+        run: npm run typecheck
+
   docker:
     runs-on: ubuntu-latest
     steps:
