@@ -50,6 +50,9 @@ lint: ## Vet and check formatting
 		echo "not gofmt'd:"; echo "$$unformatted"; exit 1; \
 	fi
 
+.PHONY: check
+check: lint test ## Vet, check formatting and test — run before opening a PR
+
 .PHONY: fmt
 fmt: ## Format the code
 	gofmt -w .
@@ -59,8 +62,9 @@ tidy: ## Tidy go.mod and go.sum
 	go mod tidy
 
 .PHONY: golden
-golden: ## Regenerate the golden ABI fixture
+golden: ## Regenerate the golden ABI fixture and the TypeScript client built from it
 	go test ./internal/spec -run TestDecodeFixture -update
+	go test ./internal/codegen -run TestGoldenZKVote -update
 
 .PHONY: up
 up: ## Start Postgres, run migrations and serve, via docker compose

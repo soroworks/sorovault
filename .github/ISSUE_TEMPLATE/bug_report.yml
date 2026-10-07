@@ -1,0 +1,42 @@
+name: Bug report
+description: sorovault did something wrong or unexpected.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Include the exact command or request, and the output you got.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `sorovault version`, or the commit you built from.
+    validations:
+      required: true
+  - type: dropdown
+    id: network
+    attributes:
+      label: Network
+      options: [testnet, mainnet, futurenet, local / standalone, not network related]
+    validations:
+      required: true
+  - type: input
+    id: contract
+    attributes:
+      label: Contract ID
+      description: If the problem involves a specific contract. Never paste a secret key.
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: Logs at --log-level debug help most.
