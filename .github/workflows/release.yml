@@ -27,14 +27,14 @@ jobs:
           --health-timeout 3s
           --health-retries 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # GoReleaser builds the changelog from history since the last tag.
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
-          go-version: "1.25"
+          go-version: "1.26"
           cache: true
 
       # A release must not ship code that fails its own suite.
@@ -43,7 +43,7 @@ jobs:
           TEST_DATABASE_URL: postgres://sorovault:sorovault@localhost:5432/sorovault?sslmode=disable
         run: go test ./...
 
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: "~> v2"
