@@ -9,8 +9,9 @@ permissions:
   contents: read
 
 env:
-  # Kept in step with the toolchain the Stellar SDK requires.
-  GO_VERSION: "1.25"
+  # Build and test on a Go release that still gets security fixes. The
+  # module minimum (go.mod) stays at what the Stellar SDK requires.
+  GO_VERSION: "1.26"
 
 jobs:
   test:
@@ -32,12 +33,14 @@ jobs:
           --health-retries 15
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+          # Always the newest patch release: security fixes land there.
+          check-latest: true
 
       - name: Check formatting
         run: |
@@ -78,8 +81,8 @@ jobs:
       run:
         working-directory: internal/codegen/testdata
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - name: Install the SDK and compiler
@@ -92,8 +95,8 @@ jobs:
   openapi-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - name: Lint openapi.json
@@ -102,6 +105,6 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build image
         run: docker build -t sorovault:ci .
