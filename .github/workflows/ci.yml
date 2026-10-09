@@ -39,6 +39,8 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+          # Always the newest patch release: security fixes land there.
+          check-latest: true
 
       - name: Check formatting
         run: |

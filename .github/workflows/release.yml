@@ -36,6 +36,8 @@ jobs:
         with:
           go-version: "1.26"
           cache: true
+          # Always the newest patch release: security fixes land there.
+          check-latest: true
 
       # A release must not ship code that fails its own suite.
       - name: Test
