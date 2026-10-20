@@ -9,16 +9,27 @@ on:
   schedule:
     - cron: "17 6 * * 1"
 
+# The default for every job in this workflow. The scan reads the code and
+# the advisory database, and writes nothing back to the repository.
 permissions:
   contents: read
 
 jobs:
   govulncheck:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v7
+    # Read-only, as above: the job checks the code out and asks govulncheck
+    # which known vulnerabilities the code can actually reach.
+    permissions:
+      contents: read
+
+    steps:
+      # Pinned to a commit rather than a tag: a tag is a mutable name, so
+      # whoever can move it decides what this workflow runs. The version is
+      # kept in the comment, which is also what Dependabot updates.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26"
           cache: true

@@ -157,6 +157,8 @@ All configuration is environment variables. Only `DATABASE_URL` (or the path in 
 |---|---|---|
 | `DATABASE_URL` | — | Postgres connection string. **Required** (or set `DATABASE_URL_FILE` to read it from a file). |
 | `MAX_CONCURRENT_REGISTRATIONS` | `4` | how many registrations and refreshes run at once |
+| `DATABASE_MAX_CONNS` | pgx's own (the greater of 4 or the CPU count) | most connections the pool holds open |
+| `DATABASE_MIN_CONNS` | `0` | connections the pool keeps open between requests |
 | `RPC_URL` | `https://soroban-testnet.stellar.org` | Stellar RPC endpoint |
 | `NETWORK_PASSPHRASE` | `Test SDF Network ; September 2015` | the network you expect `RPC_URL` to serve |
 | `HTTP_ADDR` | `:8080` | listen address |
@@ -209,6 +211,58 @@ better served than one left hanging behind a queue the server cannot drain.
 The refresher treats a busy registry the same way — it skips the contract and
 picks it up on the next sweep, since a contract that was not refreshed stays
 stale.
+
+### Connection pool
+
+SoroVault talks to Postgres through pgx's pool. Two variables size it:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DATABASE_MAX_CONNS` | pgx's own (the greater of 4 or the CPU count) | the most connections the pool holds open |
+| `DATABASE_MIN_CONNS` | `0` | the connections the pool keeps open between requests |
+
+Both are optional. Leaving them unset changes nothing: pgx sizes the pool,
+as it always has — the greater of 4 or the CPU count for the maximum, and
+none for the minimum. A value that is not a whole number, or that falls
+outside the accepted range — `1` to `10000` for the maximum, `0` to `10000`
+for the minimum — is a startup error rather than a silent fallback, and so
+is a minimum above the maximum.
+
+**Precedence.** pgx also reads `pool_max_conns` and `pool_min_conns` from
+the connection string:
+
+```text
+postgres://…/sorovault?sslmode=disable&pool_max_conns=8
+```
+
+The environment wins. `DATABASE_MAX_CONNS`, when it is set, replaces
+whatever `pool_max_conns` says, and `DATABASE_MIN_CONNS` replaces
+`pool_min_conns`. When the environment variable is unset the connection
+string's parameter applies, and when that is absent too, pgx's own default
+does. A connection string is often shared with other tools, so this keeps
+one deployment's settings from moving another's.
+
+**Sizing.** A Postgres connection is a server-side process: each one costs
+a few megabytes of memory on the server and a file descriptor on both ends.
+A sensible maximum is therefore well below the database's own
+`max_connections` (100 by default), leaving room for the migrations, the
+`psql` sessions and the monitoring that share the same server.
+
+SoroVault is mostly read-only — API reads are short queries, and a refresh
+sweep is the only sustained traffic — so the default pool is usually
+enough. Raise `DATABASE_MAX_CONNS` when requests queue behind a busy pool
+(`pool timeout` errors, or latency that grows with load), not because the
+number sounds better. Lower it on a small managed database, where the
+connection limit is often lower than Postgres's own default.
+
+Connections are opened on demand, so a large maximum costs nothing until
+the traffic arrives. `DATABASE_MIN_CONNS` keeps that many open between
+requests, which saves the handshake on the first request after an idle
+period; it is worth setting only when that latency matters and the database
+can afford the connections.
+
+The `migrate` command does not use this pool: it opens its own connection
+through golang-migrate, and migrations are short-lived either way.
 
 ## HTTP API
 

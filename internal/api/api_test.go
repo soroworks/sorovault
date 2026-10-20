@@ -44,7 +44,25 @@ func newHarness(t *testing.T) *harness {
 	return newHarnessWithStore(t, stellartest.New(), store.NewMemory())
 }
 
+// newHarnessWithStore is newHarness with a store of the caller's choosing,
+// so a test can watch what the API does with one.
 func newHarnessWithStore(t *testing.T, fake *stellartest.Fake, db store.Store) *harness {
+	t.Helper()
+
+	return newHarnessWithOptions(t, fake, db, registry.Options{})
+}
+
+// newHarnessWith is newHarness with the registry's own options, so a test
+// can give it a concurrency limit.
+func newHarnessWith(t *testing.T, opts registry.Options) *harness {
+	t.Helper()
+
+	return newHarnessWithOptions(t, stellartest.New(), store.NewMemory(), opts)
+}
+
+// newHarnessWithOptions builds a harness over the given network, store and
+// registry options.
+func newHarnessWithOptions(t *testing.T, fake *stellartest.Fake, db store.Store, opts registry.Options) *harness {
 	t.Helper()
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))

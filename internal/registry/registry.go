@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/semaphore"
+
 	"github.com/soroworks/sorovault/internal/model"
 	"github.com/soroworks/sorovault/internal/spec"
 	"github.com/soroworks/sorovault/internal/stellar"
@@ -31,6 +33,31 @@ var ErrNetworkMismatch = errors.New("registry: RPC endpoint serves a different n
 
 // ErrInvalidWasmHash reports a hash that is not a 32-byte hexadecimal value.
 var ErrInvalidWasmHash = errors.New("registry: invalid wasm hash")
+
+// ErrBusy reports that the registry was already doing as much work as it is
+// allowed to, and the operation could not start within the wait window.
+//
+// It is not a failure of the contract or the network: the same request will
+// very likely succeed a moment later, which is why callers answer it with a
+// 503 and a Retry-After rather than a 500.
+var ErrBusy = errors.New("registry: too many registrations in flight")
+
+// How many registrations and refreshes run at once, and how long one waits
+// for a slot before it is refused.
+const (
+	// DefaultMaxConcurrent is the number of registrations and refreshes
+	// that run at once when the operator does not say otherwise.
+	//
+	// Each registration holds a WASM module in memory while it decodes, so
+	// this is what keeps peak memory finite: without it, as many clients as
+	// care to ask would download a module at the same time.
+	DefaultMaxConcurrent = 4
+
+	// DefaultAcquireTimeout is how long an operation waits for a slot
+	// before it is refused. Long enough to ride out a short burst, short
+	// enough that a client is not left waiting on a busy registry.
+	DefaultAcquireTimeout = 2 * time.Second
+)
 
 // Registry registers and refreshes contracts.
 type Registry struct {

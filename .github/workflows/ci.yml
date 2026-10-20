@@ -7,6 +7,11 @@ on:
   # Lets the auto-merge bot re-run CI on main after it merges a PR.
   workflow_dispatch:
 
+# The default for every job in this workflow. CI only ever reads the
+# repository: it checks code out, builds it and runs tests against it.
+# Nothing here writes to the repository, its issues, its pull requests or its
+# packages, so the token gets read access to the contents and nothing else.
+# A job that needs more declares it for itself.
 permissions:
   contents: read
 
@@ -18,6 +23,12 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+
+    # Read-only, as above: the job checks the code out and runs the suite
+    # against it. The Postgres service is a container inside the job rather
+    # than a GitHub resource, so it needs no token permission at all.
+    permissions:
+      contents: read
 
     services:
       postgres:
@@ -35,9 +46,12 @@ jobs:
           --health-retries 15
 
     steps:
-      - uses: actions/checkout@v7
+      # Pinned to a commit rather than a tag: a tag is a mutable name, so
+      # whoever can move it decides what this workflow runs. The version is
+      # kept in the comment, which is also what Dependabot updates.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -79,12 +93,18 @@ jobs:
   # compiles, strictly, against the SDK it targets.
   codegen-typecheck:
     runs-on: ubuntu-latest
+
+    # Read-only: the job checks the code out and type-checks the generated
+    # client against the SDK it pins. It writes nothing back.
+    permissions:
+      contents: read
+
     defaults:
       run:
         working-directory: internal/codegen/testdata
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
       - name: Install the SDK and compiler
@@ -92,11 +112,19 @@ jobs:
       - name: Type-check the golden client
         run: npm run typecheck
 
+  # The Go tests prove the API works; this proves the Helm chart that
+  # deploys it is well-formed and renders.
   helm:
     runs-on: ubuntu-latest
+
+    # Read-only: the job checks the code out and lints the chart in it. It
+    # writes nothing back.
+    permissions:
+      contents: read
+
     steps:
-      - uses: actions/checkout@v7
-      - uses: azure/setup-helm@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
       - name: Lint chart
         run: helm lint deploy/helm/sorovault --set database.existingSecret=sorovault-db
       - name: Render chart
@@ -106,9 +134,14 @@ jobs:
   # valid OpenAPI document that client generators will accept.
   openapi-lint:
     runs-on: ubuntu-latest
+
+    # Read-only: the job checks the code out and lints a document in it.
+    permissions:
+      contents: read
+
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
       - name: Lint openapi.json
@@ -116,7 +149,27 @@ jobs:
 
   docker:
     runs-on: ubuntu-latest
+
+    # Read-only: the job checks the code out and builds an image from it.
+    # The image is never pushed anywhere, so it needs no write access.
+    permissions:
+      contents: read
+
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build image
         run: docker build -t sorovault:ci .
+
+  # Keeps every action in this repository pinned to a commit, so that the
+  # next person to add one cannot quietly reintroduce a mutable tag.
+  workflow-hygiene:
+    runs-on: ubuntu-latest
+
+    # Read-only: the job checks the workflows out and inspects them.
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check that every action is pinned to a commit
+        run: bash .github/scripts/check-pinned-actions.sh
