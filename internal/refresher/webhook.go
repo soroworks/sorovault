@@ -156,12 +156,16 @@ func (w *Webhook) Notify(ctx context.Context, change Change) error {
 		return fmt.Errorf("refresher: posting webhook: %w", err)
 	}
 	defer resp.Body.Close()
-	// The body is drained so the connection can be reused.
-	_, _ = io.Copy(io.Discard, resp.Body)
+	// The body is drained, up to a point, so the connection can be reused
+	// without trusting the receiver to send a small one.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return fmt.Errorf("refresher: webhook returned %s", resp.Status)
 	}
+
+	w.log.DebugContext(ctx, "refresh webhook delivered",
+		"contract_id", change.ContractID, "status", resp.StatusCode)
 	return nil
 }
 
