@@ -221,6 +221,29 @@ func TestSweepSkipsRecentlyRefreshed(t *testing.T) {
 	assert.Equal(t, before, f.fake.Calls["WasmHash"], "a fresh contract must not cost an RPC call")
 }
 
+// TestSweepAllRefreshesRecentlyRefreshedContracts proves the manual sweep
+// ignores staleness: it is one pass over everything, for cron and recovery.
+func TestSweepAllRefreshesRecentlyRefreshedContracts(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	for i := 0; i < 3; i++ {
+		f.register(t, contractID(t, i), "hello")
+	}
+
+	before := f.fake.Calls["WasmHash"]
+	r := f.refresher(t)
+
+	sum, err := r.Sweep(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, refresher.Summary{}, sum, "a scheduled sweep has nothing stale to do")
+
+	sum, err = r.SweepAll(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, refresher.Summary{Checked: 3}, sum)
+	assert.Equal(t, 3, f.fake.Calls["WasmHash"]-before,
+		"every contract must be checked even though it was just refreshed")
+}
+
 func TestSweepDetectsUpgrade(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)

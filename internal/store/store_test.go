@@ -699,6 +699,99 @@ func runStoreSuite(t *testing.T, newStore factory) {
 		assert.Equal(t, 2, page.Total, "an empty network means every network")
 	})
 
+	t.Run("deleting a contract removes every version", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h1"), iface("old")))
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h2"), iface("new")))
+		require.NoError(t, s.Save(ctx, contract(idB, "testnet", "h1"), iface("keep")))
+
+		require.NoError(t, s.Delete(ctx, "testnet", idA))
+
+		_, err := s.GetContract(ctx, "testnet", idA)
+		assert.ErrorIs(t, err, store.ErrNotFound)
+		_, err = s.GetSpec(ctx, "testnet", idA, "")
+		assert.ErrorIs(t, err, store.ErrNotFound)
+		_, err = s.ListVersions(ctx, "testnet", idA)
+		assert.ErrorIs(t, err, store.ErrNotFound, "the version history must go with the contract")
+
+		_, err = s.GetContract(ctx, "testnet", idB)
+		require.NoError(t, err, "deleting one contract must not touch another")
+
+		assert.ErrorIs(t, s.Delete(ctx, "testnet", idA), store.ErrNotFound,
+			"deleting an unknown contract reports not found")
+	})
+
+	t.Run("export and import round trip losslessly", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h1"), iface("old")))
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h2"), iface("new")))
+		require.NoError(t, s.Save(ctx, contract(idB, "public", "h3"), iface("other")))
+		require.NoError(t, s.MarkMissing(ctx, "testnet", idA, time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)))
+
+		before, err := s.Export(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, store.SnapshotVersion, before.Version)
+		require.Len(t, before.Contracts, 2)
+
+		for _, cs := range before.Contracts {
+			require.NoError(t, s.Delete(ctx, cs.Contract.Network, cs.Contract.ContractID))
+		}
+		empty, err := s.ListContracts(ctx, store.ListFilter{})
+		require.NoError(t, err)
+		require.Zero(t, empty.Total)
+
+		require.NoError(t, s.Import(ctx, before, false))
+
+		after, err := s.Export(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, before, after, "every contract, version and timestamp must survive the round trip")
+
+		spec, err := s.GetSpec(ctx, "testnet", idA, "h1")
+		require.NoError(t, err)
+		assert.Equal(t, "old", spec.Interface.Functions[0].Name)
+		versions, err := s.ListVersions(ctx, "testnet", idA)
+		require.NoError(t, err)
+		assert.Len(t, versions, 2, "the whole version history must be restored")
+	})
+
+	t.Run("import requires an empty registry unless merging", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h1"), iface("source")))
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h2"), iface("source-v2")))
+		require.NoError(t, s.Save(ctx, contract(idB, "testnet", "h1"), iface("source-b")))
+		snapshot, err := s.Export(ctx)
+		require.NoError(t, err)
+
+		for _, cs := range snapshot.Contracts {
+			require.NoError(t, s.Delete(ctx, cs.Contract.Network, cs.Contract.ContractID))
+		}
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h1"), iface("existing")))
+
+		assert.ErrorIs(t, s.Import(ctx, snapshot, false), store.ErrRegistryNotEmpty)
+
+		require.NoError(t, s.Import(ctx, snapshot, true))
+		got, err := s.GetSpec(ctx, "testnet", idA, "h1")
+		require.NoError(t, err)
+		assert.Equal(t, "existing", got.Interface.Functions[0].Name,
+			"merge must not overwrite a contract that is already present")
+
+		versions, err := s.ListVersions(ctx, "testnet", idA)
+		require.NoError(t, err)
+		assert.Len(t, versions, 2, "merge must add the versions that are missing")
+	})
+
+	t.Run("import rejects an unsupported snapshot version", func(t *testing.T) {
+		s := newStore(t)
+		err := s.Import(context.Background(), &store.Snapshot{Version: store.SnapshotVersion + 1}, false)
+		assert.ErrorContains(t, err, "unsupported snapshot version")
+	})
+
 	t.Run("concurrent saves are safe", func(t *testing.T) {
 		s := newStore(t)
 		ctx := context.Background()
