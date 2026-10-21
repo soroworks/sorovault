@@ -57,6 +57,14 @@ func Ping(ctx context.Context, databaseURL string) error {
 	return nil
 }
 
+// Ping reports whether the database still answers, without changing it.
+func (p *Postgres) Ping(ctx context.Context) error {
+	if err := p.pool.Ping(ctx); err != nil {
+		return fmt.Errorf("store: pinging postgres: %w", err)
+	}
+	return nil
+}
+
 // Close releases the connection pool.
 func (p *Postgres) Close() error {
 	p.pool.Close()

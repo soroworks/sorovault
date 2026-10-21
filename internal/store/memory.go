@@ -50,6 +50,9 @@ func (m *Memory) SetClock(now func() time.Time) {
 	m.now = now
 }
 
+// Ping satisfies Store. The memory store has no external service to ask.
+func (m *Memory) Ping(ctx context.Context) error { return ctx.Err() }
+
 // Close satisfies Store. There is nothing to release.
 func (m *Memory) Close() error { return nil }
 

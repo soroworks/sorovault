@@ -35,9 +35,10 @@ import (
 
 // Server holds the API's dependencies.
 type Server struct {
-	reg   *registry.Registry
-	log   *slog.Logger
-	cache *interfaceCache
+	reg       *registry.Registry
+	log       *slog.Logger
+	cache     *interfaceCache
+	rateLimit *clientLimiter
 
 	// lastSweep, when set, reports the most recent automatic refresh
 	// sweep. It is nil when refresh is disabled, and GET /api/stats then
@@ -65,14 +66,14 @@ func (s *Server) Routes() chi.Router {
 	r := chi.NewRouter()
 
 	r.Get("/contracts", s.listContracts)
-	r.Post("/contracts", s.registerContract)
+	r.Post("/contracts", s.rateLimited(s.registerContract))
 	r.Post("/contracts:batch", s.batchRegisterContracts)
 	r.Get("/wasm/{hash}", s.getWasmSpec)
 	r.Post("/wasm/{hash}", s.catalogWasm)
 	r.Get("/wasm/{hash}/contracts", s.listWasmContracts)
 	r.Get("/contracts/{id}", s.getContract)
 	r.Put("/contracts/{id}/source", s.updateContractSource)
-	r.Post("/contracts/{id}/refresh", s.refreshContract)
+	r.Post("/contracts/{id}/refresh", s.rateLimited(s.refreshContract))
 	r.Get("/contracts/{id}/versions", s.listVersions)
 	r.Get("/contracts/{id}/functions", s.listFunctions)
 	r.Get("/contracts/{id}/functions/{fn}", s.getFunction)
@@ -264,11 +265,10 @@ func (s *Server) getTypeScriptClient(w http.ResponseWriter, r *http.Request) {
 }
 
 // Middleware returns the stack the whole server runs behind: a request ID, a
-// panic guard, and a bound on how long any one request may take.
+// panic guard, and one log line per request.
 func Middleware(log *slog.Logger) []func(http.Handler) http.Handler {
 	return []func(http.Handler) http.Handler{
 		middleware.RequestID,
-		middleware.RealIP,
 		middleware.Recoverer,
 		requestLogger(log),
 	}

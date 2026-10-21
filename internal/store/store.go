@@ -418,6 +418,10 @@ type Store interface {
 	// ListVersions returns every stored version of a contract, newest first.
 	ListVersions(ctx context.Context, network, contractID string) ([]SpecVersion, error)
 
+	// Ping reports whether the store's backing service answers. Readiness
+	// uses it; it must not change any stored data.
+	Ping(ctx context.Context) error
+
 	// Close releases any resources held by the store.
 	Close() error
 }

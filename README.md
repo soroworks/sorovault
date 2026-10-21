@@ -168,10 +168,15 @@ All configuration is environment variables. Only `DATABASE_URL` (or the path in 
 | `NETWORK_PASSPHRASE` | `Test SDF Network ; September 2015` | the network you expect `RPC_URL` to serve |
 | `HTTP_ADDR` | `:8080` | listen address |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| `LOG_FORMAT` | `text` | `text` for people, `json` for one parseable object per line |
 | `RPC_TIMEOUT` | `30s` | bound on a single contract fetch |
 | `REFRESH_INTERVAL` | `0` (off) | re-check registered contracts this often while serving; minimum `1m` |
 | `REFRESH_WEBHOOK_URL` | — | post a JSON message here whenever a refresh finds an upgraded contract |
 | `REFRESH_WEBHOOK_SECRET` | — | sign webhook payloads with HMAC-SHA256 |
+| `RATE_LIMIT_PER_MINUTE` | `30` | registrations and refreshes allowed per client per minute |
+| `RATE_LIMIT_BURST` | `10` | how many of those may arrive at once |
+| `TRUST_X_FORWARDED_FOR` | `false` | use the first `X-Forwarded-For` address as the client; only behind a trusted proxy |
+| `CORS_ORIGINS` | — | comma-separated exact browser origins, or `*` for read-only routes only |
 
 `NETWORK_PASSPHRASE` is a guard, not a source of truth. SoroVault reads the real
 passphrase from the RPC endpoint and refuses to proceed if the two disagree, so
@@ -299,10 +304,45 @@ the same **503**, with the `Retry-After` header, inline on the page.
 | `GET` | `/api/upgrades` | recent interface upgrades, newest first — `?network=`, `?limit=`, `?offset=` |
 | `GET` | `/api/upgrades.atom` | the same upgrades as an Atom 1.0 feed |
 | `GET` | `/healthz` | liveness |
+| `GET` | `/readyz` | readiness: checks Postgres and RPC |
 
 `POST /api/contracts` returns **201** when the contract is new and **200** when
 it was already registered, so it is safe to retry. Passing `?wasm_hash=` to a
 read selects a superseded version instead of the current one.
+
+**Liveness and readiness.** `GET /healthz` only says the process is serving; it
+deliberately ignores Postgres and RPC so a scheduler does not restart SoroVault
+over a dependency blip. `GET /readyz` is the opposite check: it answers **200**
+only when the database responds and the RPC endpoint serves the configured
+network, and **503** with a body naming each failing dependency otherwise. Its
+answer is cached for five seconds, so a frequent probe does not itself load the
+dependencies:
+
+```json
+{
+  "status": "unavailable",
+  "version": "dev",
+  "checks": { "database": "connection refused", "rpc": "ok" }
+}
+```
+
+**Rate limiting.** Registering or refreshing a contract makes RPC calls and can
+download a WASM module, so `POST /api/contracts` and
+`POST /api/contracts/{id}/refresh` are limited per client. The defaults are 30
+requests per minute with a burst of 10; `RATE_LIMIT_PER_MINUTE` and
+`RATE_LIMIT_BURST` change them. A client over the limit gets **429** with a
+`Retry-After` header and a JSON error body. Reads and the browse UI are not
+limited. The client is the connection address unless `TRUST_X_FORWARDED_FOR` is
+enabled; only enable it when a proxy you control sets that header, or callers
+can invent a new address on every request.
+
+**CORS.** Cross-origin browser clients are opt-in through `CORS_ORIGINS`: an
+exact, comma-separated list such as `https://app.example.com,http://localhost:3000`.
+Unset means no CORS headers, exactly as before. `*` is also accepted, but it
+opens only `GET`/`HEAD` (and their preflights): the registry's read responses
+are public, while the write routes spend this instance's RPC quota and database
+writes, so they are never opened to every origin. An explicit allowlist may use
+the write methods because the operator has named the clients they trust.
 
 **Batches.** `POST /api/contracts:batch` registers up to 20 contracts in one
 request, which is how a tool seeds a whole deployment without making twenty
