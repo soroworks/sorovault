@@ -50,6 +50,10 @@ lint: ## Vet and check formatting
 		echo "not gofmt'd:"; echo "$$unformatted"; exit 1; \
 	fi
 
+.PHONY: test-live
+test-live: ## Run the opt-in live smoke test against testnet (requires SOROVAULT_LIVE=1)
+	@go test -run TestLiveSmokeTest -v ./internal/stellar...
+
 .PHONY: check
 check: lint test ## Vet, check formatting and test — run before opening a PR
 
