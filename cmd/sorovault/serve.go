@@ -49,7 +49,7 @@ func newServeCmd() *cobra.Command {
 				// never left writing to a closed pool.
 				defer stopRefresh()
 
-				handler, err := newRouter(a.registry, a.log, refresh)
+				handler, err := newRouter(a.registry, a.log, refresh, a.cfg.PublicURL)
 				if err != nil {
 					return err
 				}
@@ -123,10 +123,14 @@ func refreshNotifier(a *app) (refresher.Notifier, error) {
 // newRouter assembles the JSON API, the browse UI and the health endpoint
 // into one handler. refresh may be nil when automatic refresh is off; the
 // statistics endpoint then has no sweep to report.
-func newRouter(reg *registry.Registry, log *slog.Logger, refresh *refresher.Refresher) (http.Handler, error) {
+func newRouter(reg *registry.Registry, log *slog.Logger, refresh *refresher.Refresher, publicURL ...string) (http.Handler, error) {
 	ui, err := web.NewServer(reg, log)
 	if err != nil {
 		return nil, err
+	}
+
+	if len(publicURL) > 0 {
+		ui.SetPublicURL(publicURL[0])
 	}
 
 	server := api.NewServer(reg, log)
