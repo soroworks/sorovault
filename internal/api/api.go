@@ -7,6 +7,7 @@
 package api
 
 import (
+	"bytes"
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
@@ -63,6 +64,7 @@ func (s *Server) SetLastSweep(fn func() (refresher.SweepRecord, bool)) {
 // Routes returns the API's routes, to be mounted under /api.
 func (s *Server) Routes() chi.Router {
 	r := chi.NewRouter()
+	r.Use(compressResponses("application/json", "text/plain"))
 
 	r.Get("/contracts", s.listContracts)
 	r.Post("/contracts", s.registerContract)
@@ -263,6 +265,115 @@ func (s *Server) getTypeScriptClient(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", `attachment; filename="`+contractID+`.client.ts"`)
 	}
 	_, _ = w.Write([]byte(source)) //nolint:gosec // generated TypeScript, served as text/plain with nosniff
+}
+
+// minCompressBytes is the size below which the extra encoding work and
+// headers cost more than they save. Health checks, small errors and tiny
+// listings stay plain.
+const minCompressBytes = 1024
+
+// compressResponses gzips large responses of the listed content types when
+// the client accepts gzip.
+//
+// It buffers the response before deciding, because chi's compressor decides
+// at WriteHeader time while the size is only known after the body is written.
+// API responses are bounded and already materialised in memory, so the delay
+// is not visible; the win is that a small response never carries a
+// Content-Encoding it did not need.
+func compressResponses(types ...string) func(http.Handler) http.Handler {
+	compressor := middleware.NewCompressor(5, types...)
+	compressible := make(map[string]struct{}, len(types))
+	for _, contentType := range types {
+		compressible[contentType] = struct{}{}
+	}
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !acceptsGzip(r.Header.Get("Accept-Encoding")) {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			buffer := newResponseBuffer()
+			next.ServeHTTP(buffer, r)
+
+			contentType, _, _ := strings.Cut(buffer.Header().Get("Content-Type"), ";")
+			_, allowed := compressible[contentType]
+			if buffer.body.Len() < minCompressBytes || !allowed ||
+				buffer.Header().Get("Content-Encoding") != "" {
+				buffer.writeTo(w)
+				return
+			}
+
+			compressor.Handler(http.HandlerFunc(func(cw http.ResponseWriter, _ *http.Request) {
+				copyHeader(cw.Header(), buffer.Header())
+				cw.WriteHeader(buffer.status)
+				_, _ = cw.Write(buffer.body.Bytes())
+			})).ServeHTTP(w, r)
+		})
+	}
+}
+
+// acceptsGzip reports whether the header allows gzip, honouring an explicit
+// q=0 refusal.
+func acceptsGzip(header string) bool {
+	for _, part := range strings.Split(header, ",") {
+		fields := strings.Split(part, ";")
+		if !strings.EqualFold(strings.TrimSpace(fields[0]), "gzip") {
+			continue
+		}
+		for _, parameter := range fields[1:] {
+			name, value, ok := strings.Cut(parameter, "=")
+			if ok && strings.EqualFold(strings.TrimSpace(name), "q") &&
+				strings.TrimSpace(value) == "0" {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// responseBuffer records a response so compression can be decided once its
+// full size is known.
+type responseBuffer struct {
+	header      http.Header
+	status      int
+	body        bytes.Buffer
+	wroteHeader bool
+}
+
+func newResponseBuffer() *responseBuffer {
+	return &responseBuffer{header: make(http.Header), status: http.StatusOK}
+}
+
+func (b *responseBuffer) Header() http.Header { return b.header }
+
+func (b *responseBuffer) WriteHeader(status int) {
+	if b.wroteHeader {
+		return
+	}
+	b.wroteHeader = true
+	b.status = status
+}
+
+func (b *responseBuffer) Write(p []byte) (int, error) {
+	if !b.wroteHeader {
+		b.WriteHeader(http.StatusOK)
+	}
+	return b.body.Write(p)
+}
+
+func (b *responseBuffer) writeTo(w http.ResponseWriter) {
+	copyHeader(w.Header(), b.header)
+	w.WriteHeader(b.status)
+	_, _ = w.Write(b.body.Bytes())
+}
+
+func copyHeader(dst, src http.Header) {
+	for key, values := range src {
+		dst[key] = append([]string(nil), values...)
+	}
 }
 
 // Middleware returns the stack the whole server runs behind: a request ID, a

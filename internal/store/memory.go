@@ -201,6 +201,157 @@ func (m *Memory) UpdateSource(ctx context.Context, network, contractID, sourceUR
 	return nil
 }
 
+// Delete removes a contract and every interface version stored for it.
+func (m *Memory) Delete(ctx context.Context, network, contractID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	k := key(network, contractID)
+	if _, ok := m.contracts[k]; !ok {
+		return fmt.Errorf("%w: contract %s on %s", ErrNotFound, contractID, network)
+	}
+	delete(m.contracts, k)
+	delete(m.specs, k)
+	return nil
+}
+
+// Export returns a stable, deep copy of every contract and version.
+func (m *Memory) Export(ctx context.Context) (*Snapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	snapshot := &Snapshot{
+		Version:   SnapshotVersion,
+		Contracts: make([]ContractSnapshot, 0, len(m.contracts)),
+	}
+	for k, c := range m.contracts {
+		cs := ContractSnapshot{Contract: c}
+		cs.Contract.MissingSince = copyMissing(c.MissingSince)
+		cs.Contract.Matches = nil
+		for _, spec := range m.specs[k] {
+			cloned, err := cloneInterface(spec.Interface)
+			if err != nil {
+				return nil, err
+			}
+			cs.Versions = append(cs.Versions, SpecSnapshot{
+				WasmHash:  spec.WasmHash,
+				Interface: cloned,
+				DecodedAt: spec.DecodedAt,
+			})
+		}
+		sort.Slice(cs.Versions, func(i, j int) bool {
+			if !cs.Versions[i].DecodedAt.Equal(cs.Versions[j].DecodedAt) {
+				return cs.Versions[i].DecodedAt.Before(cs.Versions[j].DecodedAt)
+			}
+			return cs.Versions[i].WasmHash < cs.Versions[j].WasmHash
+		})
+		snapshot.Contracts = append(snapshot.Contracts, cs)
+	}
+
+	sort.Slice(snapshot.Contracts, func(i, j int) bool {
+		if snapshot.Contracts[i].Contract.Network != snapshot.Contracts[j].Contract.Network {
+			return snapshot.Contracts[i].Contract.Network < snapshot.Contracts[j].Contract.Network
+		}
+		return snapshot.Contracts[i].Contract.ContractID < snapshot.Contracts[j].Contract.ContractID
+	})
+	return snapshot, nil
+}
+
+// Import loads a snapshot into the memory store, preserving timestamps.
+func (m *Memory) Import(ctx context.Context, snapshot *Snapshot, merge bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateSnapshot(snapshot); err != nil {
+		return err
+	}
+
+	prepared := make([]ContractSnapshot, 0, len(snapshot.Contracts))
+	for _, cs := range snapshot.Contracts {
+		cs.Contract.MissingSince = copyMissing(cs.Contract.MissingSince)
+		cs.Contract.Matches = nil
+		for i := range cs.Versions {
+			cloned, err := cloneInterface(cs.Versions[i].Interface)
+			if err != nil {
+				return err
+			}
+			cs.Versions[i].Interface = cloned
+		}
+		prepared = append(prepared, cs)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if !merge && len(m.contracts) > 0 {
+		return ErrRegistryNotEmpty
+	}
+
+	for _, cs := range prepared {
+		k := key(cs.Contract.Network, cs.Contract.ContractID)
+		if _, exists := m.contracts[k]; !exists {
+			m.contracts[k] = cs.Contract
+		}
+		for _, version := range cs.Versions {
+			if m.hasVersion(k, version.WasmHash) {
+				continue
+			}
+			m.nextID++
+			m.specs[k] = append(m.specs[k], Spec{
+				ID:         m.nextID,
+				Network:    cs.Contract.Network,
+				ContractID: cs.Contract.ContractID,
+				WasmHash:   version.WasmHash,
+				Interface:  version.Interface,
+				DecodedAt:  version.DecodedAt,
+			})
+		}
+	}
+	return nil
+}
+
+// hasVersion reports whether a contract already has a stored version for a
+// WASM hash. The caller holds m.mu.
+func (m *Memory) hasVersion(k, wasmHash string) bool {
+	for _, spec := range m.specs[k] {
+		if spec.WasmHash == wasmHash {
+			return true
+		}
+	}
+	return false
+}
+
+// validateSnapshot checks the parts of a snapshot that every store must
+// agree on before writing anything.
+func validateSnapshot(snapshot *Snapshot) error {
+	if snapshot == nil {
+		return errors.New("store: cannot import a nil snapshot")
+	}
+	if snapshot.Version != SnapshotVersion {
+		return fmt.Errorf("store: unsupported snapshot version %d (want %d)",
+			snapshot.Version, SnapshotVersion)
+	}
+	for _, cs := range snapshot.Contracts {
+		if cs.Contract.Network == "" || cs.Contract.ContractID == "" {
+			return errors.New("store: snapshot contains a contract without a network or contract ID")
+		}
+		for _, version := range cs.Versions {
+			if version.Interface == nil {
+				return fmt.Errorf("store: snapshot for %s has a version without an interface",
+					cs.Contract.ContractID)
+			}
+		}
+	}
+	return nil
+}
+
 // GetContract returns one contract's current state.
 func (m *Memory) GetContract(ctx context.Context, network, contractID string) (*Contract, error) {
 	if err := ctx.Err(); err != nil {

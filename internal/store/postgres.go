@@ -210,6 +210,153 @@ func (p *Postgres) UpdateSource(ctx context.Context, network, contractID, source
 	return nil
 }
 
+// Delete removes a contract and every version stored for it. The specs
+// foreign key cascades, so one statement removes the whole history.
+func (p *Postgres) Delete(ctx context.Context, network, contractID string) error {
+	const q = `DELETE FROM contracts WHERE network = $1 AND contract_id = $2`
+	tag, err := p.pool.Exec(ctx, q, network, contractID)
+	if err != nil {
+		return fmt.Errorf("store: deleting contract %s: %w", contractID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: contract %s on %s", ErrNotFound, contractID, network)
+	}
+	return nil
+}
+
+// Export returns every contract and interface version in a stable order.
+func (p *Postgres) Export(ctx context.Context) (*Snapshot, error) {
+	const contractsQuery = `
+		SELECT network, contract_id, current_wasm_hash, name, source_url, source_commit,
+		       first_seen, last_refreshed, missing_since
+		FROM contracts
+		ORDER BY network, contract_id`
+
+	rows, err := p.pool.Query(ctx, contractsQuery)
+	if err != nil {
+		return nil, fmt.Errorf("store: exporting contracts: %w", err)
+	}
+	defer rows.Close()
+
+	snapshot := &Snapshot{Version: SnapshotVersion, Contracts: []ContractSnapshot{}}
+	index := make(map[string]int)
+	for rows.Next() {
+		var c Contract
+		if err := rows.Scan(
+			&c.Network, &c.ContractID, &c.CurrentWasmHash, &c.Name, &c.SourceURL, &c.SourceCommit,
+			&c.FirstSeen, &c.LastRefreshed, &c.MissingSince,
+		); err != nil {
+			return nil, fmt.Errorf("store: scanning exported contract: %w", err)
+		}
+		index[key(c.Network, c.ContractID)] = len(snapshot.Contracts)
+		snapshot.Contracts = append(snapshot.Contracts, ContractSnapshot{
+			Contract: c,
+			Versions: []SpecSnapshot{},
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: exporting contracts: %w", err)
+	}
+
+	const specsQuery = `
+		SELECT network, contract_id, wasm_hash, spec, decoded_at
+		FROM specs
+		ORDER BY network, contract_id, decoded_at, id`
+	specRows, err := p.pool.Query(ctx, specsQuery)
+	if err != nil {
+		return nil, fmt.Errorf("store: exporting specs: %w", err)
+	}
+	defer specRows.Close()
+
+	for specRows.Next() {
+		var network, contractID, wasmHash string
+		var body []byte
+		var decodedAt time.Time
+		if err := specRows.Scan(&network, &contractID, &wasmHash, &body, &decodedAt); err != nil {
+			return nil, fmt.Errorf("store: scanning exported spec: %w", err)
+		}
+		var iface model.Interface
+		if err := json.Unmarshal(body, &iface); err != nil {
+			return nil, fmt.Errorf("store: decoding exported spec for %s: %w", contractID, err)
+		}
+		i, ok := index[key(network, contractID)]
+		if !ok {
+			continue
+		}
+		snapshot.Contracts[i].Versions = append(snapshot.Contracts[i].Versions, SpecSnapshot{
+			WasmHash:  wasmHash,
+			Interface: &iface,
+			DecodedAt: decodedAt,
+		})
+	}
+	if err := specRows.Err(); err != nil {
+		return nil, fmt.Errorf("store: exporting specs: %w", err)
+	}
+	return snapshot, nil
+}
+
+// Import loads a snapshot in one transaction, preserving every timestamp.
+func (p *Postgres) Import(ctx context.Context, snapshot *Snapshot, merge bool) error {
+	if err := validateSnapshot(snapshot); err != nil {
+		return err
+	}
+
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin import: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op once the tx is committed
+
+	if !merge {
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM contracts)`).Scan(&exists); err != nil {
+			return fmt.Errorf("store: checking registry is empty: %w", err)
+		}
+		if exists {
+			return ErrRegistryNotEmpty
+		}
+	}
+
+	const insertContract = `
+		INSERT INTO contracts (
+			network, contract_id, current_wasm_hash, name, source_url, source_commit,
+			first_seen, last_refreshed, missing_since
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (network, contract_id) DO NOTHING`
+
+	const insertSpec = `
+		INSERT INTO specs (network, contract_id, wasm_hash, spec, symbols, decoded_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (network, contract_id, wasm_hash) DO NOTHING`
+
+	for _, cs := range snapshot.Contracts {
+		c := cs.Contract
+		if _, err := tx.Exec(ctx, insertContract,
+			c.Network, c.ContractID, c.CurrentWasmHash, c.Name, c.SourceURL, c.SourceCommit,
+			c.FirstSeen, c.LastRefreshed, c.MissingSince); err != nil {
+			return fmt.Errorf("store: importing contract %s: %w", c.ContractID, err)
+		}
+
+		for _, version := range cs.Versions {
+			body, err := json.Marshal(version.Interface)
+			if err != nil {
+				return fmt.Errorf("store: encoding imported spec for %s: %w", c.ContractID, err)
+			}
+			if _, err := tx.Exec(ctx, insertSpec,
+				c.Network, c.ContractID, version.WasmHash, body,
+				joinSymbols(version.Interface), version.DecodedAt); err != nil {
+				return fmt.Errorf("store: importing spec for %s: %w", c.ContractID, err)
+			}
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit import: %w", err)
+	}
+	return nil
+}
+
 // ListContracts returns a filtered, paged listing ordered by most recently
 // refreshed, along with the total number of matches.
 func (p *Postgres) ListContracts(ctx context.Context, f ListFilter) (*ContractPage, error) {

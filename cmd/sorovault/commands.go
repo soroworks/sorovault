@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,12 +11,14 @@ import (
 	"strings"
 	"sync"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/soroworks/sorovault/internal/codegen"
 	"github.com/soroworks/sorovault/internal/config"
 	"github.com/soroworks/sorovault/internal/model"
+	"github.com/soroworks/sorovault/internal/refresher"
 	"github.com/soroworks/sorovault/internal/registry"
 	"github.com/soroworks/sorovault/internal/stellar"
 	"github.com/soroworks/sorovault/internal/store"
@@ -70,20 +73,258 @@ contract has been upgraded since it was last seen.`,
 	return cmd
 }
 
-func newRefreshCmd() *cobra.Command {
-	var asJSON bool
+func newRemoveCmd() *cobra.Command {
+	var (
+		network string
+		yes     bool
+	)
 
 	cmd := &cobra.Command{
-		Use:   "refresh <contract_id>...",
+		Use:   "remove <contract_id>",
+		Short: "Delete a contract and all its stored versions",
+		Long: `Delete a contract from the registry, together with every interface
+version stored for it on the selected network.
+
+The API deliberately has no route for this: it is unauthenticated, so
+removal is an operator action available only through the CLI. Without --yes
+the command asks for confirmation before deleting anything.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return withApp(cmd.Context(), func(ctx context.Context, a *app) error {
+				contractID := args[0]
+
+				net := network
+				if net == "" {
+					var err error
+					if net, err = a.registry.Network(ctx); err != nil {
+						return err
+					}
+				}
+
+				if !yes {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Remove %s from %s and all its versions? [y/N] ", contractID, net)
+					if !confirmed(cmd.InOrStdin()) {
+						fmt.Fprintln(cmd.ErrOrStderr(), "aborted")
+						return nil
+					}
+				}
+
+				if err := a.registry.Store().Delete(ctx, net, contractID); err != nil {
+					return err
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "removed %s from %s\n", contractID, net)
+				return nil
+			})
+		},
+	}
+
+	cmd.Flags().StringVar(&network, "network", "", "network to remove from (default: the network RPC_URL serves)")
+	cmd.Flags().BoolVar(&yes, "yes", false, "delete without asking for confirmation")
+	return cmd
+}
+
+// confirmed reads one answer and accepts only an explicit yes.
+func confirmed(r io.Reader) bool {
+	scanner := bufio.NewScanner(r)
+	if !scanner.Scan() {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(scanner.Text())) {
+	case "y", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
+func newExportCmd() *cobra.Command {
+	var output string
+
+	cmd := &cobra.Command{
+		Use:   "export [file]",
+		Short: "Write the registry as versioned JSON",
+		Long: `Write every contract and every stored interface version, with their
+timestamps, as one versioned JSON document. With no file, or with "-", it goes
+to standard output.
+
+The document is portable between databases: "sorovault import" loads it
+without contacting RPC.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 && output != "" {
+				return fmt.Errorf("give either a file argument or --output, not both")
+			}
+			path := output
+			if len(args) == 1 {
+				path = args[0]
+			}
+
+			return withStore(cmd.Context(), func(ctx context.Context, s store.Store) error {
+				snapshot, err := s.Export(ctx)
+				if err != nil {
+					return err
+				}
+
+				if path == "" || path == "-" {
+					return writeJSON(cmd.OutOrStdout(), snapshot)
+				}
+
+				file, err := os.Create(path)
+				if err != nil {
+					return fmt.Errorf("creating %s: %w", path, err)
+				}
+				if err := writeJSON(file, snapshot); err != nil {
+					_ = file.Close()
+					return fmt.Errorf("writing %s: %w", path, err)
+				}
+				if err := file.Close(); err != nil {
+					return fmt.Errorf("writing %s: %w", path, err)
+				}
+				fmt.Fprintf(cmd.ErrOrStderr(), "wrote %s (%d contract(s))\n", path, len(snapshot.Contracts))
+				return nil
+			})
+		},
+	}
+
+	cmd.Flags().StringVarP(&output, "output", "o", "", "write to this file instead of stdout")
+	return cmd
+}
+
+func newImportCmd() *cobra.Command {
+	var (
+		input string
+		merge bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "import [file]",
+		Short: "Load a registry exported as JSON",
+		Long: `Load a document written by "sorovault export" into the registry.
+
+Without --merge the registry must be empty; the import then reproduces every
+contract, interface version and timestamp exactly. With --merge only the
+contracts and versions that are missing are added, and records already in the
+database are left alone.
+
+Import reads the document directly into the store. It never contacts RPC, so
+it works when the network is unavailable.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 && input != "" {
+				return fmt.Errorf("give either a file argument or --input, not both")
+			}
+			path := input
+			if len(args) == 1 {
+				path = args[0]
+			}
+
+			var data []byte
+			var err error
+			if path == "" || path == "-" {
+				data, err = io.ReadAll(cmd.InOrStdin())
+			} else {
+				data, err = os.ReadFile(path)
+			}
+			if err != nil {
+				return fmt.Errorf("reading snapshot: %w", err)
+			}
+
+			var snapshot store.Snapshot
+			if err := json.Unmarshal(data, &snapshot); err != nil {
+				return fmt.Errorf("reading snapshot: %w", err)
+			}
+
+			return withStore(cmd.Context(), func(ctx context.Context, s store.Store) error {
+				if err := s.Import(ctx, &snapshot, merge); err != nil {
+					return err
+				}
+				fmt.Fprintf(cmd.ErrOrStderr(), "imported %d contract(s)\n", len(snapshot.Contracts))
+				return nil
+			})
+		},
+	}
+
+	cmd.Flags().StringVarP(&input, "input", "i", "", "read from this file instead of stdin")
+	cmd.Flags().BoolVar(&merge, "merge", false, "add only what is missing instead of requiring an empty registry")
+	return cmd
+}
+
+// printSweepSummary writes one line describing a refresh sweep.
+func printSweepSummary(w io.Writer, sum refresher.Summary) {
+	fmt.Fprintf(w, "checked %d, changed %d, missing %d, failed %d, busy %d\n",
+		sum.Checked, sum.Changed, sum.Missing, sum.Failed, sum.Busy)
+}
+
+func newRefreshCmd() *cobra.Command {
+	var (
+		asJSON bool
+		all    bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "refresh [contract_id]...",
 		Short: "Re-check registered contracts for an upgraded interface",
 		Long: `Compare each registered contract against the network and record a new
 interface version if its WASM has changed.
 
+With --all it runs one sweep over every contract on the network, regardless
+of how recently each was refreshed, then exits. It is meant for a cron job or
+for catching up after an RPC outage; it does not wait an interval.
+
 Unlike "add", refresh starts from what is already stored, so an unchanged
 contract costs a single RPC round trip: the module is only downloaded once
 its hash is known to differ.`,
-		Args: cobra.MinimumNArgs(1),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if all {
+				if len(args) > 0 {
+					return fmt.Errorf("--all refreshes every contract and cannot be combined with contract IDs")
+				}
+				return nil
+			}
+			if len(args) == 0 {
+				return fmt.Errorf("at least one contract ID is required, or use --all")
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if all {
+				return withApp(cmd.Context(), func(ctx context.Context, a *app) error {
+					interval := a.cfg.RefreshInterval
+					if interval <= 0 {
+						// SweepAll ignores staleness and pacing; the interval
+						// only satisfies New's positive-duration guard.
+						interval = time.Minute
+					}
+
+					r, err := refresher.New(a.registry, refresher.Options{
+						Interval: interval,
+						Timeout:  a.cfg.RPCTimeout,
+						Logger:   a.log.With("component", "refresher"),
+					})
+					if err != nil {
+						return err
+					}
+
+					summary, err := r.SweepAll(ctx)
+					if err != nil {
+						return err
+					}
+
+					if asJSON {
+						if err := writeJSON(cmd.OutOrStdout(), summary); err != nil {
+							return err
+						}
+					} else {
+						printSweepSummary(cmd.OutOrStdout(), summary)
+					}
+
+					if summary.Failed > 0 {
+						return fmt.Errorf("%w: %d contract(s) failed to refresh", errPrinted, summary.Failed)
+					}
+					return nil
+				})
+			}
+
 			return withApp(cmd.Context(), func(ctx context.Context, a *app) error {
 				var failed int
 
@@ -127,6 +368,7 @@ its hash is known to differ.`,
 	}
 
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the full result as JSON")
+	cmd.Flags().BoolVar(&all, "all", false, "run one sweep over every contract on the network")
 	return cmd
 }
 

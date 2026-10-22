@@ -443,11 +443,15 @@ it. The contract page links its WASM hash to this listing.
 
 ```console
 sorovault add <contract_id>...      # fetch, decode and register
+sorovault remove <contract_id>      # delete a contract and its versions (--yes)
 sorovault refresh <contract_id>...  # re-check for an upgraded interface
+sorovault refresh --all             # one sweep over every contract (--json)
 sorovault list                      # -q, --function, --type, --network, --limit, --offset
 sorovault get <contract_id>         # --function, --wasm-hash, --json
 sorovault versions <contract_id>    # --network, --json
 sorovault codegen <contract_id>     # --lang ts|md; -o, --wasm-hash, --package
+sorovault export [file]             # versioned JSON backup (-o)
+sorovault import [file]             # restore a backup (--merge)
 sorovault serve                     # JSON API + browse UI
 sorovault migrate                   # apply schema migrations
 sorovault doctor                    # check a deployment's health

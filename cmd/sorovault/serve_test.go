@@ -83,6 +83,25 @@ func TestHealthz(t *testing.T) {
 
 // TestRootCmdWiring guards the command tree against a command being added
 // without being registered.
+// TestHealthzIsNotCompressed keeps the liveness endpoint cheap and plain,
+// even for a client that would accept a compressed body everywhere else.
+func TestHealthzIsNotCompressed(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(testRouter(t))
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/healthz", nil)
+	require.NoError(t, err)
+	req.Header.Set("Accept-Encoding", "gzip")
+
+	resp, err := srv.Client().Do(req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	assert.Empty(t, resp.Header.Get("Content-Encoding"))
+}
+
 func TestRootCmdWiring(t *testing.T) {
 	t.Parallel()
 
@@ -93,7 +112,7 @@ func TestRootCmdWiring(t *testing.T) {
 		got[c.Name()] = true
 	}
 
-	for _, want := range []string{"add", "list", "get", "refresh", "serve", "migrate", "doctor"} {
+	for _, want := range []string{"add", "remove", "list", "get", "refresh", "export", "import", "serve", "migrate", "doctor"} {
 		assert.True(t, got[want], "command %q should be registered", want)
 	}
 }

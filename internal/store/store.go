@@ -19,6 +19,37 @@ import (
 // ErrNotFound is returned when a lookup matches no row.
 var ErrNotFound = errors.New("store: not found")
 
+// ErrRegistryNotEmpty is returned by Import when it is asked to load into a
+// registry that already holds contracts and merge was not requested.
+var ErrRegistryNotEmpty = errors.New("store: registry is not empty")
+
+// SnapshotVersion is the on-disk format version of a Snapshot. Reading a
+// snapshot with any other version is refused rather than guessed at.
+const SnapshotVersion = 1
+
+// Snapshot is a complete, portable copy of the registry: every contract and
+// every interface version it has stored, with the timestamps that make the
+// version history meaningful.
+type Snapshot struct {
+	Version   int                `json:"version"`
+	Contracts []ContractSnapshot `json:"contracts"`
+}
+
+// ContractSnapshot is one contract together with its version history.
+type ContractSnapshot struct {
+	Contract Contract       `json:"contract"`
+	Versions []SpecSnapshot `json:"versions"`
+}
+
+// SpecSnapshot is one stored interface version. The row ID and the search
+// symbols are deliberately absent: they are storage details that both
+// implementations can rebuild.
+type SpecSnapshot struct {
+	WasmHash  string           `json:"wasm_hash"`
+	Interface *model.Interface `json:"interface"`
+	DecodedAt time.Time        `json:"decoded_at"`
+}
+
 // Contract is a registered contract's current state.
 type Contract struct {
 	ContractID      string    `json:"contract_id"`
@@ -364,6 +395,19 @@ type UpgradePage struct {
 type Store interface {
 	// UpdateSource attaches repository metadata to an existing contract.
 	UpdateSource(ctx context.Context, network, contractID, sourceURL, sourceCommit string) error
+
+	// Delete removes a contract and every interface version stored for it.
+	// It returns ErrNotFound when the contract is not in the registry.
+	Delete(ctx context.Context, network, contractID string) error
+
+	// Export returns every contract and every stored interface version,
+	// including their timestamps, for a portable registry backup.
+	Export(ctx context.Context) (*Snapshot, error)
+
+	// Import loads a snapshot. With merge false it requires an empty
+	// registry; with merge true it adds the contracts and versions that are
+	// missing and leaves existing records untouched.
+	Import(ctx context.Context, snapshot *Snapshot, merge bool) error
 
 	// SaveWasmSpec records an interface by network and WASM hash, independent
 	// of any deployed contract.
