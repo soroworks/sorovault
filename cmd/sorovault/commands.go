@@ -102,9 +102,9 @@ the command asks for confirmation before deleting anything.`,
 				}
 
 				if !yes {
-					fmt.Fprintf(cmd.ErrOrStderr(), "Remove %s from %s and all its versions? [y/N] ", contractID, net)
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Remove %s from %s and all its versions? [y/N] ", contractID, net)
 					if !confirmed(cmd.InOrStdin()) {
-						fmt.Fprintln(cmd.ErrOrStderr(), "aborted")
+						_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "aborted")
 						return nil
 					}
 				}
@@ -112,7 +112,7 @@ the command asks for confirmation before deleting anything.`,
 				if err := a.registry.Store().Delete(ctx, net, contractID); err != nil {
 					return err
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "removed %s from %s\n", contractID, net)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "removed %s from %s\n", contractID, net)
 				return nil
 			})
 		},
@@ -169,7 +169,7 @@ without contacting RPC.`,
 					return writeJSON(cmd.OutOrStdout(), snapshot)
 				}
 
-				file, err := os.Create(path)
+				file, err := os.Create(path) //nolint:gosec // the path is the operator's --output argument
 				if err != nil {
 					return fmt.Errorf("creating %s: %w", path, err)
 				}
@@ -180,7 +180,7 @@ without contacting RPC.`,
 				if err := file.Close(); err != nil {
 					return fmt.Errorf("writing %s: %w", path, err)
 				}
-				fmt.Fprintf(cmd.ErrOrStderr(), "wrote %s (%d contract(s))\n", path, len(snapshot.Contracts))
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "wrote %s (%d contract(s))\n", path, len(snapshot.Contracts))
 				return nil
 			})
 		},
@@ -223,7 +223,7 @@ it works when the network is unavailable.`,
 			if path == "" || path == "-" {
 				data, err = io.ReadAll(cmd.InOrStdin())
 			} else {
-				data, err = os.ReadFile(path)
+				data, err = os.ReadFile(path) //nolint:gosec // the path is the operator's --input argument
 			}
 			if err != nil {
 				return fmt.Errorf("reading snapshot: %w", err)
@@ -238,7 +238,7 @@ it works when the network is unavailable.`,
 				if err := s.Import(ctx, &snapshot, merge); err != nil {
 					return err
 				}
-				fmt.Fprintf(cmd.ErrOrStderr(), "imported %d contract(s)\n", len(snapshot.Contracts))
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "imported %d contract(s)\n", len(snapshot.Contracts))
 				return nil
 			})
 		},
@@ -251,7 +251,7 @@ it works when the network is unavailable.`,
 
 // printSweepSummary writes one line describing a refresh sweep.
 func printSweepSummary(w io.Writer, sum refresher.Summary) {
-	fmt.Fprintf(w, "checked %d, changed %d, missing %d, failed %d, busy %d\n",
+	_, _ = fmt.Fprintf(w, "checked %d, changed %d, missing %d, failed %d, busy %d\n",
 		sum.Checked, sum.Changed, sum.Missing, sum.Failed, sum.Busy)
 }
 
