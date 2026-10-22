@@ -209,6 +209,11 @@ exactly as `POST /api/contracts/{id}/refresh` would record it; an unchanged
 one costs a single `getLedgerEntries` call and is not re-downloaded. Refreshes
 are spread at even offsets across the interval to avoid an RPC traffic burst.
 
+A rate-limited RPC response pauses the sweep and retries that contract with
+exponential backoff, capped at 16 seconds. After five retries, the sweep stops
+and leaves remaining contracts stale for the next scheduled sweep; the rate
+limit is logged once rather than once per contract.
+
 A contract that fails to refresh — expired, or an RPC error — is logged and
 skipped, and the sweep carries on. One sweep runs at startup and then one per
 interval; a sweep in progress at shutdown is cancelled before the database is
@@ -442,9 +447,9 @@ it. The contract page links its WASM hash to this listing.
 ## CLI
 
 ```console
-sorovault add <contract_id>...      # fetch, decode and register
+sorovault add <contract_id>...      # fetch, decode and register (--from-file)
 sorovault remove <contract_id>      # delete a contract and its versions (--yes)
-sorovault refresh <contract_id>...  # re-check for an upgraded interface
+sorovault refresh <contract_id>...  # re-check for an upgraded interface (--from-file)
 sorovault refresh --all             # one sweep over every contract (--json)
 sorovault list                      # -q, --function, --type, --network, --limit, --offset
 sorovault get <contract_id>         # --function, --wasm-hash, --json
@@ -458,7 +463,9 @@ sorovault doctor                    # check a deployment's health
 ```
 
 `add` and `refresh` accept several contract IDs and report per-contract
-failures without abandoning the rest. `list` takes `--function` and `--type`
+failures without abandoning the rest. Both accept `--from-file path` to read
+additional IDs, one per line; blank lines and lines beginning with `#` are
+ignored, and `--from-file -` reads standard input. `list` takes `--function` and `--type`
 for the same exact-name filters the API offers. Every read command takes
 `--json`, which emits exactly what the API serves:
 

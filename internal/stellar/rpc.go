@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/stellar/go-stellar-sdk/clients/rpcclient"
 	protocol "github.com/stellar/go-stellar-sdk/protocols/rpc"
@@ -170,12 +171,23 @@ func (f *RPCFetcher) singleEntry(ctx context.Context, key xdr.LedgerKey) (*proto
 
 	resp, err := f.client.GetLedgerEntries(ctx, protocol.GetLedgerEntriesRequest{Keys: []string{encoded}})
 	if err != nil {
+		if isRateLimitError(err) {
+			return nil, fmt.Errorf("stellar: getLedgerEntries: %w: %w", ErrRateLimited, err)
+		}
 		return nil, fmt.Errorf("stellar: getLedgerEntries: %w", err)
 	}
 	if len(resp.Entries) == 0 {
 		return nil, nil
 	}
 	return &resp.Entries[0], nil
+}
+
+func isRateLimitError(err error) bool {
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "http status 429") ||
+		strings.Contains(message, "status 429") ||
+		strings.Contains(message, "rate limit") ||
+		strings.Contains(message, "too many requests")
 }
 
 // instanceLedgerKey builds the ledger key of a contract's instance entry.

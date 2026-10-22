@@ -26,6 +26,10 @@ var ErrNoWasm = errors.New("stellar: contract has no uploaded wasm")
 // ErrWasmNotFound reports that the network has no uploaded code for a hash.
 var ErrWasmNotFound = errors.New("stellar: wasm not found on network")
 
+// ErrRateLimited reports that the RPC endpoint refused a request because
+// its rate limit was exceeded.
+var ErrRateLimited = errors.New("stellar: RPC rate limit exceeded")
+
 // Contract is a deployed contract's code as fetched from the network.
 type Contract struct {
 	// ID is the contract's strkey address ("C...").
