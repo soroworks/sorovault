@@ -606,7 +606,7 @@ func (s *Server) getFunctionSchema(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/schema+json")
-	_, _ = w.Write(schema)
+	_, _ = w.Write(schema) //nolint:gosec // generated JSON Schema, served as application/schema+json
 }
 
 // listFunctions serves GET /api/contracts/{id}/functions.
