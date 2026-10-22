@@ -156,6 +156,7 @@ func (m *Memory) Save(ctx context.Context, c Contract, iface *model.Interface) e
 		WasmHash:   c.CurrentWasmHash,
 		Interface:  cloned,
 		DecodedAt:  now,
+		ObservedLedger: c.ObservedLedger,
 	})
 	return nil
 }
@@ -528,6 +529,7 @@ func (m *Memory) ListVersions(ctx context.Context, network, contractID string) (
 			WasmHash:  s.WasmHash,
 			DecodedAt: s.DecodedAt,
 			Current:   s.WasmHash == c.CurrentWasmHash,
+			ObservedLedger: s.ObservedLedger,
 		})
 	}
 

@@ -29,6 +29,8 @@ type Contract struct {
 	SourceCommit    string    `json:"source_commit,omitempty"`
 	FirstSeen       time.Time `json:"first_seen"`
 	LastRefreshed   time.Time `json:"last_refreshed"`
+	// ObservedLedger is only passed to Save for a newly observed version.
+	ObservedLedger *uint32 `json:"-"`
 
 	// MissingSince is when a refresh first found the contract absent from
 	// the network. It is nil while the contract is live, and is cleared by
@@ -145,6 +147,8 @@ type Spec struct {
 	WasmHash   string           `json:"wasm_hash"`
 	Interface  *model.Interface `json:"interface"`
 	DecodedAt  time.Time        `json:"decoded_at"`
+	// ObservedLedger is the ledger at observation, not the upgrade ledger.
+	ObservedLedger *uint32 `json:"observed_ledger"`
 }
 
 // WasmSpec is a decoded interface for uploaded code that no registered
@@ -162,6 +166,8 @@ type SpecVersion struct {
 	WasmHash  string    `json:"wasm_hash"`
 	DecodedAt time.Time `json:"decoded_at"`
 	Current   bool      `json:"current"`
+	// ObservedLedger is the ledger at observation, not the upgrade ledger.
+	ObservedLedger *uint32 `json:"observed_ledger"`
 }
 
 // ListFilter selects and pages a contract listing.

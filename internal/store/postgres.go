@@ -139,14 +139,14 @@ func (p *Postgres) Save(ctx context.Context, c Contract, iface *model.Interface)
 	// Re-registering an unchanged contract must not append a duplicate
 	// version, so a repeat hash refreshes the existing row in place.
 	const insertSpec = `
-		INSERT INTO specs (network, contract_id, wasm_hash, spec, symbols)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO specs (network, contract_id, wasm_hash, spec, symbols, observed_ledger)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (network, contract_id, wasm_hash) DO UPDATE SET
 			spec    = EXCLUDED.spec,
 			symbols = EXCLUDED.symbols`
 
 	if _, err := tx.Exec(ctx, insertSpec,
-		c.Network, c.ContractID, c.CurrentWasmHash, body, joinSymbols(iface)); err != nil {
+		c.Network, c.ContractID, c.CurrentWasmHash, body, joinSymbols(iface), c.ObservedLedger); err != nil {
 		return fmt.Errorf("store: saving spec for %s: %w", c.ContractID, err)
 	}
 
@@ -598,7 +598,7 @@ func (p *Postgres) GetSpec(ctx context.Context, network, contractID, wasmHash st
 	// defined by the contract row rather than by insertion order, which
 	// matters if a contract is ever rolled back to an earlier WASM.
 	const q = `
-		SELECT s.id, s.network, s.contract_id, s.wasm_hash, s.spec, s.decoded_at
+		SELECT s.id, s.network, s.contract_id, s.wasm_hash, s.spec, s.decoded_at, s.observed_ledger
 		FROM specs s
 		JOIN contracts c ON c.network = s.network AND c.contract_id = s.contract_id
 		WHERE s.network = $1
@@ -608,7 +608,7 @@ func (p *Postgres) GetSpec(ctx context.Context, network, contractID, wasmHash st
 	var s Spec
 	var body []byte
 	err := p.pool.QueryRow(ctx, q, network, contractID, wasmHash).Scan(
-		&s.ID, &s.Network, &s.ContractID, &s.WasmHash, &body, &s.DecodedAt,
+		&s.ID, &s.Network, &s.ContractID, &s.WasmHash, &body, &s.DecodedAt, &s.ObservedLedger,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, specNotFound(network, contractID, wasmHash)
@@ -630,7 +630,7 @@ func (p *Postgres) GetSpec(ctx context.Context, network, contractID, wasmHash st
 // flagging whichever one the contract currently runs.
 func (p *Postgres) ListVersions(ctx context.Context, network, contractID string) ([]SpecVersion, error) {
 	const q = `
-		SELECT s.wasm_hash, s.decoded_at, s.wasm_hash = c.current_wasm_hash AS current
+		SELECT s.wasm_hash, s.decoded_at, s.wasm_hash = c.current_wasm_hash AS current, s.observed_ledger
 		FROM specs s
 		JOIN contracts c ON c.network = s.network AND c.contract_id = s.contract_id
 		WHERE s.network = $1 AND s.contract_id = $2
@@ -645,7 +645,7 @@ func (p *Postgres) ListVersions(ctx context.Context, network, contractID string)
 	versions := []SpecVersion{}
 	for rows.Next() {
 		var v SpecVersion
-		if err := rows.Scan(&v.WasmHash, &v.DecodedAt, &v.Current); err != nil {
+		if err := rows.Scan(&v.WasmHash, &v.DecodedAt, &v.Current, &v.ObservedLedger); err != nil {
 			return nil, fmt.Errorf("store: scanning version: %w", err)
 		}
 		versions = append(versions, v)

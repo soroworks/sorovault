@@ -726,7 +726,11 @@ func printRegisterResult(w io.Writer, r *registry.Result) {
 // printInterface writes a contract's interface as readable signatures.
 func printInterface(w io.Writer, s *store.Spec) {
 	fmt.Fprintf(w, "%s  (%s)\n", s.ContractID, s.Network)
-	fmt.Fprintf(w, "wasm %s\n\n", s.WasmHash)
+	fmt.Fprintf(w, "wasm %s\n", s.WasmHash)
+	if s.ObservedLedger != nil {
+		fmt.Fprintf(w, "observed ledger %d\n", *s.ObservedLedger)
+	}
+	fmt.Fprintln(w)
 
 	if len(s.Interface.Functions) == 0 {
 		fmt.Fprintln(w, "no functions")
