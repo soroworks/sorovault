@@ -1,0 +1,76 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # The query packs and the Go toolchain both move between our commits, so
+  # re-scan weekly even when nothing has been pushed. The minute is offset
+  # from security.yml's weekly run so the two do not start together.
+  schedule:
+    - cron: "41 5 * * 1"
+
+# The workflow only reads the repository; the analysis job asks for the one
+# extra scope it needs on top of this.
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required to publish the findings to code scanning. GitHub's published
+      # template also grants `actions: read` and `packages: read`; both are
+      # only needed for private repositories, so they are left out here.
+      security-events: write
+
+    strategy:
+      # One language failing should not cancel the other one's analysis.
+      fail-fast: false
+      matrix:
+        include:
+          # Compiled, so CodeQL has to watch a build. The module has no code
+          # generation, which is what the action's own build detection runs.
+          - language: go
+            build-mode: autobuild
+          # The web UI is server-rendered templates over a vendored copy of
+          # htmx: there is no build step, so the sources are read directly.
+          - language: javascript-typescript
+            build-mode: none
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Only the Go half needs the toolchain; the JavaScript extractor works
+      # on the sources as they are.
+      - if: matrix.language == 'go'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+          cache: true
+          # Always the newest patch release: security fixes land there.
+          check-latest: true
+
+      - uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          # The default suite reports the higher-severity rules only; the
+          # extended set runs the rest of the security queries, which is the
+          # point of scanning a WASM decoder and the SQL built from it.
+          queries: security-extended
+          # htmx is a vendored third-party release, so a finding in it would
+          # be in code this repository does not own and cannot fix.
+          config: |
+            paths-ignore:
+              - internal/web/static/htmx.min.js
+
+      - if: matrix.build-mode == 'autobuild'
+        uses: github/codeql-action/autobuild@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+
+      - uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          # One analysis per language for this commit.
+          category: /language:${{ matrix.language }}
