@@ -451,10 +451,11 @@ func (s *Server) listContracts(w http.ResponseWriter, r *http.Request) {
 		Query:   q.Get("q"),
 		// The exact-name filters are repeatable, and every one of them has
 		// to match.
-		Functions: q["function"],
-		Types:     q["type"],
-		Limit:     intParam(q.Get("limit"), 0),
-		Offset:    intParam(q.Get("offset"), 0),
+		Functions:  q["function"],
+		Types:      q["type"],
+		Implements: q["implements"],
+		Limit:      intParam(q.Get("limit"), 0),
+		Offset:     intParam(q.Get("offset"), 0),
 	}
 	filter.Normalize()
 
@@ -519,6 +520,7 @@ func (s *Server) getContract(w http.ResponseWriter, r *http.Request) {
 		Network:      contract.Network,
 		WasmHash:     cacheHash,
 		Name:         contract.Name,
+		Implements:   contract.Implements,
 		SourceURL:    contract.SourceURL,
 		SourceCommit: contract.SourceCommit,
 		FirstSeen:    contract.FirstSeen.UTC(),

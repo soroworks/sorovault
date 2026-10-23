@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/soroworks/sorovault/internal/api"
+	"github.com/soroworks/sorovault/internal/model"
 	"github.com/soroworks/sorovault/internal/registry"
 	"github.com/soroworks/sorovault/internal/spec"
 	"github.com/soroworks/sorovault/internal/stellar/stellartest"
@@ -1008,4 +1009,44 @@ type databaseDownError struct{}
 
 func (*databaseDownError) Error() string {
 	return "dial tcp: connection string postgres://user:hunter2@db/registry refused"
+}
+
+
+func TestListContractsFiltersByImplementedStandard(t *testing.T) {
+	h := newHarness(t)
+	defer h.server.Close()
+
+	functions := make([]model.Function, 0, len(spec.SEP41.Functions))
+	for _, required := range spec.SEP41.Functions {
+		inputs := make([]model.Param, 0, len(required.Inputs))
+		for i, typ := range required.Inputs {
+			inputs = append(inputs, model.Param{Name: string(rune('a' + i)), Type: typ})
+		}
+		functions = append(functions, model.Function{
+			Name: required.Name, Inputs: inputs, Outputs: append([]model.Type(nil), required.Outputs...),
+		})
+	}
+	tokenInterface := &model.Interface{ABIVersion: model.ABIVersion, Functions: functions}
+	plainInterface := &model.Interface{ABIVersion: model.ABIVersion, Functions: []model.Function{
+		{Name: "transfer", Inputs: []model.Param{{Name: "amount", Type: model.Scalar(model.KindU32)}}},
+	}}
+
+	ctx := context.Background()
+	require.NoError(t, h.store.Save(ctx, store.Contract{ContractID: idA, Network: "testnet", CurrentWasmHash: "token-hash"}, tokenInterface))
+	require.NoError(t, h.store.Save(ctx, store.Contract{ContractID: idB, Network: "testnet", CurrentWasmHash: "plain-hash"}, plainInterface))
+
+	resp, err := http.Get(h.server.URL + "/api/contracts?network=testnet&implements=sep41")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var body struct {
+		Contracts []store.Contract `json:"contracts"`
+		Total     int              `json:"total"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	require.Equal(t, 1, body.Total)
+	require.Len(t, body.Contracts, 1)
+	assert.Equal(t, idA, body.Contracts[0].ContractID)
+	assert.Equal(t, []string{"sep41"}, body.Contracts[0].Implements)
 }

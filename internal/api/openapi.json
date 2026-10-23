@@ -34,6 +34,7 @@
           { "name": "q", "in": "query", "description": "Case-insensitive substring of the contract ID, its name, or a function, type or event name in its current interface.", "schema": { "type": "string" } },
           { "name": "function", "in": "query", "description": "Only contracts whose current interface declares a function with exactly this name. Repeatable; every name must match. Case-sensitive.", "schema": { "type": "array", "items": { "type": "string" } }, "style": "form", "explode": true },
           { "name": "type", "in": "query", "description": "Only contracts whose current interface declares a user-defined type with exactly this name. Repeatable; every name must match. Case-sensitive.", "schema": { "type": "array", "items": { "type": "string" } }, "style": "form", "explode": true },
+          { "name": "implements", "in": "query", "description": "Only contracts implementing every listed standard interface ID, such as sep41. Repeatable.", "schema": { "type": "array", "items": { "type": "string" } }, "style": "form", "explode": true },
           { "$ref": "#/components/parameters/network" },
           { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 } },
           { "name": "offset", "in": "query", "schema": { "type": "integer", "minimum": 0, "default": 0 } }
@@ -559,7 +560,8 @@
           "first_seen": { "type": "string", "format": "date-time" },
           "last_refreshed": { "type": "string", "format": "date-time" },
           "missing_since": { "type": "string", "format": "date-time", "description": "When a refresh last found the contract absent from the network. Absent while the contract is live." },
-          "matches": { "type": "array", "items": { "type": "string" }, "description": "Interface symbols a search query matched. Only present on search results." }
+          "matches": { "type": "array", "items": { "type": "string" }, "description": "Interface symbols a search query matched. Only present on search results." },
+          "implements": { "type": "array", "items": { "type": "string" }, "description": "Standard interface IDs detected from the current contract interface." }
         },
         "required": ["contract_id", "network", "current_wasm_hash", "first_seen", "last_refreshed"]
       },
@@ -668,9 +670,10 @@
           "decoded_at": { "type": "string", "format": "date-time" },
           "missing_since": { "type": "string", "format": "date-time", "description": "When a refresh last found the contract absent from the network. Absent while the contract is live." },
           "current": { "type": "boolean", "description": "False when an older version was requested with wasm_hash." },
+          "implements": { "type": "array", "items": { "type": "string" }, "description": "Standard interface IDs detected from the current contract interface." },
           "interface": { "$ref": "#/components/schemas/Interface" }
         },
-        "required": ["contract_id", "network", "wasm_hash", "first_seen", "decoded_at", "current", "interface"]
+        "required": ["contract_id", "network", "wasm_hash", "first_seen", "decoded_at", "current", "implements", "interface"]
       },
       "FunctionDetail": {
         "type": "object",

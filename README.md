@@ -808,3 +808,10 @@ contracts themselves. SoroVault reads chain state; it never sends a transaction.
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
+
+
+## Token standard detection
+
+SoroVault classifies a contract against versioned interface definitions after decoding its interface. The first matcher is SEP-41 Soroban Token Interface [v0.5.2](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0041.md), a draft version pinned by the matcher. Matching requires every required function name, ordered argument type, and return type to match exactly; names alone are not enough. The API accepts repeatable `implements` filters, for example `GET /api/contracts?implements=sep41`, and the browse list shows a badge for detected standards.
+
+Existing registry rows are classified on their next successful registration or refresh. The migration does not infer standards from old JSON rows, so an older contract will not appear in a standard-filtered listing until refreshed.
