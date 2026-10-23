@@ -84,6 +84,9 @@ func (s *Server) Routes() chi.Router {
 	r.Get("/upgrades", s.listUpgrades)
 	r.Get("/upgrades.atom", s.upgradesAtom)
 	r.Get("/openapi.json", serveOpenAPI)
+	r.Post("/subscriptions", s.subscribeContract)
+	r.Get("/subscriptions", s.listSubscriptions)
+	r.Delete("/subscriptions", s.unsubscribeContract)
 
 	return r
 }
@@ -799,6 +802,88 @@ func (s *Server) network(r *http.Request) (string, error) {
 		return n, nil
 	}
 	return s.reg.Network(r.Context())
+}
+
+// subscribeRequest is the request body for creating a subscription.
+type subscribeRequest struct {
+	ContractIDs []string `json:"contract_ids"`
+	URL         string   `json:"url"`
+}
+
+// subscribeResponse is the response for subscription operations.
+type subscribeResponse struct {
+	ID      string `json:"id"`
+	Network string `json:"network"`
+	Contracts int  `json:"contracts"`
+	Active    bool `json:"active"`
+}
+
+// subscriptionListResponse is the response for listing subscriptions.
+type subscriptionListResponse struct {
+	Subscriptions []store.SubscriptionListItem `json:"subscriptions"`
+}
+
+// subscribeContract serves POST /api/subscriptions.
+// Registers a webhook URL for a set of contracts, returning a secret used
+// to sign deliveries.
+func (s *Server) subscribeContract(w http.ResponseWriter, r *http.Request) {
+	var req subscribeRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	net, _ := s.network(r)
+	secret, err := s.reg.Store().Subscribe(r.Context(), net, req.ContractIDs, req.URL)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, subscribeResponse{
+		ID:      secret,
+		Network: net,
+		Contracts: len(req.ContractIDs),
+		Active:  true,
+	})
+}
+
+// listSubscriptions serves GET /api/subscriptions.
+// Lists all subscriptions.
+func (s *Server) listSubscriptions(w http.ResponseWriter, r *http.Request) {
+	items, err := s.reg.Store().ListSubscriptions(r.Context())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, subscriptionListResponse{
+		Subscriptions: items,
+	})
+}
+
+// unsubscribeContract serves DELETE /api/subscriptions.
+// Removes a subscription by its secret.
+func (s *Server) unsubscribeContract(w http.ResponseWriter, r *http.Request) {
+	net, _ := s.network(r)
+	secret := chi.URLParam(r, "secret")
+	if secret == "" {
+		writeError(w, http.StatusBadRequest, "secret is required")
+		return
+	}
+
+	err := s.reg.Store().Unsubscribe(r.Context(), secret)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, subscribeResponse{
+		ID:      secret,
+		Network: net,
+		Contracts: 0,
+		Active:    false,
+	})
 }
 
 // fail maps a domain error onto a status code and writes it.

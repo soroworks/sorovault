@@ -388,6 +388,32 @@ type UpgradePage struct {
 	Total int `json:"total"`
 }
 
+// Subscription is a per-contract webhook subscription.
+type Subscription struct {
+	ID         string    `json:"id"`
+	Network    string    `json:"network"`
+	ContractIDs []string  `json:"contract_ids"`
+	URL        string    `json:"url"`
+	Secret     string    `json:"-"`
+	Active     bool      `json:"active"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// SubscribeRequest is the request body for creating a subscription.
+type SubscribeRequest struct {
+	ContractIDs []string `json:"contract_ids"`
+	URL         string   `json:"url"`
+}
+
+// SubscriptionListItem is a summary of a subscription for listing.
+type SubscriptionListItem struct {
+	ID        string `json:"id"`
+	Network   string `json:"network"`
+	Contracts int    `json:"contracts"`
+	Active    bool   `json:"active"`
+	CreatedAt string `json:"created_at"`
+}
+
 // Store is the registry's persistence layer.
 //
 // Implementations must be safe for concurrent use. Two are provided: Postgres
@@ -467,6 +493,23 @@ type Store interface {
 	// ListVersions returns every stored version of a contract, newest first.
 	ListVersions(ctx context.Context, network, contractID string) ([]SpecVersion, error)
 
+	// GetSubscription returns a subscription by its secret (ID).
+	GetSubscription(ctx context.Context, secret string) (*Subscription, error)
+
+	// MarkSubscriptionInactive marks a subscription as inactive.
+	MarkSubscriptionInactive(ctx context.Context, secret string) error
+
 	// Close releases any resources held by the store.
 	Close() error
+
+	// Subscribe creates a new webhook subscription for the given network and
+	// contract IDs. Returns the subscription ID (which also serves as the
+	// secret for HMAC signing and deletion).
+	Subscribe(ctx context.Context, network string, contractIDs []string, url string) (string, error)
+
+	// ListSubscriptions returns all subscriptions, active and inactive.
+	ListSubscriptions(ctx context.Context) ([]SubscriptionListItem, error)
+
+	// Unsubscribe removes a subscription by its secret (ID).
+	Unsubscribe(ctx context.Context, secret string) error
 }
