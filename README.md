@@ -305,7 +305,7 @@ the same **503**, with the `Retry-After` header, inline on the page.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/api/contracts` | list contracts — `?q=`, `?function=`, `?type=`, `?network=`, `?limit=`, `?offset=` |
+| `GET` | `/api/contracts` | list contracts — `?q=`, `?function=`, `?type=`, `?network=`, `?limit=`, `?cursor=` (`?offset=` still works but is deprecated; a cursor walk sees contracts registered mid-walk exactly once, an offset page repeats and skips them) |
 | `POST` | `/api/contracts` | register a contract — `{"contract_id": "C…"}` |
 | `POST` | `/api/contracts:batch` | register up to 20 contracts in one request — `{"contract_ids": ["C…", "C…"]}` |
 | `POST` | `/api/wasm/{hash}` | catalog uploaded code before a contract runs it |
