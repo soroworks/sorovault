@@ -89,6 +89,16 @@ type listResponse struct {
 }
 
 type contractResponse struct {
+	ContractID   string    `json:"contract_id"`
+	Network      string    `json:"network"`
+	WasmHash     string    `json:"wasm_hash,omitempty"`
+	InterfaceID  string    `json:"interface_id,omitempty"`
+	Builtin      bool      `json:"builtin,omitempty"`
+	Name         string    `json:"name,omitempty"`
+	SourceURL    string    `json:"source_url,omitempty"`
+	SourceCommit string    `json:"source_commit,omitempty"`
+	FirstSeen    time.Time `json:"first_seen"`
+	DecodedAt    time.Time `json:"decoded_at"`
 	ContractID   string     `json:"contract_id"`
 	Network      string     `json:"network"`
 	WasmHash     string     `json:"wasm_hash"`
@@ -108,7 +118,9 @@ type contractResponse struct {
 type functionResponse struct {
 	ContractID string `json:"contract_id"`
 	Network    string `json:"network"`
-	WasmHash   string `json:"wasm_hash"`
+	WasmHash    string `json:"wasm_hash,omitempty"`
+	InterfaceID string `json:"interface_id,omitempty"`
+	Builtin     bool   `json:"builtin,omitempty"`
 
 	// Signature is the function rendered as a one-line Rust-like
 	// declaration, for display and logging.
@@ -120,8 +132,10 @@ type functionResponse struct {
 type functionListResponse struct {
 	ContractID string            `json:"contract_id"`
 	Network    string            `json:"network"`
-	WasmHash   string            `json:"wasm_hash"`
-	Functions  []functionSummary `json:"functions"`
+	WasmHash    string            `json:"wasm_hash,omitempty"`
+	InterfaceID string            `json:"interface_id,omitempty"`
+	Builtin     bool              `json:"builtin,omitempty"`
+	Functions   []functionSummary `json:"functions"`
 }
 
 type functionSummary struct {

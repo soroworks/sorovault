@@ -83,8 +83,15 @@ Worth writing down, because it is the part that is easy to get wrong:
    contract's `ScAddress`, the key `ScvLedgerKeyContractInstance`, and
    `Persistent` durability. `getLedgerEntries` returns a `ContractDataEntry`
    whose `Val.Instance.Executable.WasmHash` names the module.
-   - A Stellar asset contract has no `WasmHash` — it is built into the host, so
-     there is no interface to decode. SoroVault reports this distinctly.
+   - A Stellar Asset Contract has no `WasmHash` — it is built into the host, so
+     there is no uploaded interface to decode. SoroVault recognizes the on-ledger
+     `CONTRACT_EXECUTABLE_STELLAR_ASSET` discriminant and serves the documented
+     built-in interface under the stable identifier
+     `builtin:stellar-asset-contract:v1`. Its interface JSON is marked
+     `builtin: true` and cites the [official SAC specification](https://developers.stellar.org/docs/tokens/stellar-asset-contract).
+     Registering an SAC now returns its interface instead of the previous HTTP
+     422 response; `wasm_hash` is omitted from the contract interface response
+     and `interface_id` identifies the built-in definition.
 2. **Contract code.** Build a `LedgerKey` for `ContractCode` keyed by that hash.
    `getLedgerEntries` returns a `ContractCodeEntry` holding the module bytes.
    The hash is the SHA-256 of the module, which is what makes it a usable

@@ -240,6 +240,25 @@ func TestJSONShape(t *testing.T) {
 	assert.Equal(t, []any{}, got["types"].(map[string]any)["structs"])
 }
 
+
+func TestStellarAssetContractInterface(t *testing.T) {
+	t.Parallel()
+
+	iface := model.StellarAssetContractInterface()
+	require.True(t, iface.Builtin)
+	assert.Equal(t, "https://developers.stellar.org/docs/tokens/stellar-asset-contract", iface.Source)
+	assert.Len(t, iface.Functions, 17)
+
+	transfer, ok := iface.Function("transfer")
+	require.True(t, ok)
+	require.Len(t, transfer.Inputs, 3)
+	assert.Equal(t, model.KindMuxedAddress, transfer.Inputs[1].Type.Kind)
+	assert.Equal(t, "to", transfer.Inputs[1].Name)
+
+	trust, ok := iface.Function("trust")
+	require.True(t, ok)
+	require.Len(t, trust.Inputs, 1)
+	assert.Equal(t, "addr", trust.Inputs[0].Name)
 // TestEnvMeta checks the environment metadata's own shape: the interface
 // version is written the way a version number is, and the section's two
 // numbers are kept apart.

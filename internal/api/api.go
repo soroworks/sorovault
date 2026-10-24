@@ -517,7 +517,24 @@ func (s *Server) getContract(w http.ResponseWriter, r *http.Request) {
 		s.cache.add(key, cached)
 	}
 
+	builtin := cacheHash == stellar.BuiltinSACIdentifier
+	responseHash := cacheHash
+	interfaceID := ""
+	if builtin {
+		responseHash = ""
+		interfaceID = stellar.BuiltinSACIdentifier
+	}
 	writeJSON(w, http.StatusOK, contractResponse{
+		ContractID: contract.ContractID,
+		Network:    contract.Network,
+		WasmHash:   responseHash,
+		InterfaceID: interfaceID,
+		Builtin:    builtin,
+		Name:       contract.Name,
+		FirstSeen:  contract.FirstSeen.UTC(),
+		DecodedAt:  cached.decodedAt,
+		Current:    cacheHash == contract.CurrentWasmHash,
+		Interface:  json.RawMessage(cached.body),
 		ContractID:   contract.ContractID,
 		Network:      contract.Network,
 		WasmHash:     cacheHash,
@@ -557,12 +574,19 @@ func (s *Server) getFunction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	wasmHash, interfaceID := stored.WasmHash, ""
+	if stored.Interface.Builtin {
+		wasmHash = ""
+		interfaceID = stored.WasmHash
+	}
 	writeJSON(w, http.StatusOK, functionResponse{
-		ContractID: stored.ContractID,
-		Network:    stored.Network,
-		WasmHash:   stored.WasmHash,
-		Signature:  fn.Signature(),
-		Function:   fn,
+		ContractID:  stored.ContractID,
+		Network:     stored.Network,
+		WasmHash:    wasmHash,
+		InterfaceID: interfaceID,
+		Builtin:     stored.Interface.Builtin,
+		Signature:   fn.Signature(),
+		Function:    fn,
 	})
 }
 
@@ -683,11 +707,18 @@ func (s *Server) listFunctions(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	wasmHash, interfaceID := stored.WasmHash, ""
+	if stored.Interface.Builtin {
+		wasmHash = ""
+		interfaceID = stored.WasmHash
+	}
 	writeJSON(w, http.StatusOK, functionListResponse{
-		ContractID: stored.ContractID,
-		Network:    stored.Network,
-		WasmHash:   stored.WasmHash,
-		Functions:  functions,
+		ContractID:  stored.ContractID,
+		Network:     stored.Network,
+		WasmHash:    wasmHash,
+		InterfaceID: interfaceID,
+		Builtin:     stored.Interface.Builtin,
+		Functions:   functions,
 	})
 }
 

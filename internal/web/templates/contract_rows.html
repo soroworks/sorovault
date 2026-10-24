@@ -8,7 +8,7 @@
       <tr>
         <th>Contract</th>
         <th>Network</th>
-        <th>WASM hash</th>
+        <th>Interface ID / WASM hash</th>
         <th>Last refreshed</th>
       </tr>
     </thead>
@@ -23,6 +23,7 @@
           {{if .Matches}}<div class="matches">matches {{range $i, $m := .Matches}}{{if $i}}, {{end}}<code>{{$m}}</code>{{end}}</div>{{end}}
         </td>
         <td><span class="badge">{{.Network}}</span></td>
+        <td class="mono dim">{{if eq .CurrentWasmHash "builtin:stellar-asset-contract:v1"}}Built-in SAC{{else}}{{short .CurrentWasmHash 16}}{{end}}</td>
         <td class="mono dim">
           <span class="truncate" id="hash-{{.ContractID}}">{{.CurrentWasmHash}}</span>
           <button class="copy" type="button" data-copy="#hash-{{.ContractID}}" aria-label="Copy WASM hash">{{template "copy_icon"}}</button>
