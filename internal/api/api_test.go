@@ -932,6 +932,72 @@ func TestRealFixtureServesUsableABI(t *testing.T) {
 	assert.Contains(t, h.decode(t, raw)["signature"], "pub_signals: Vec<BytesN<32>>")
 }
 
+// TestDownloadContractABI proves the interface can be saved as a file rather
+// than displayed, under a name that says which contract and version it is.
+func TestDownloadContractABI(t *testing.T) {
+	t.Parallel()
+
+	old := moduleWith(t, "v1")
+	h := newHarness(t)
+	h.fake.Deploy(idA, old)
+	resp, raw := h.do(t, http.MethodPost, "/api/contracts", `{"contract_id":"`+idA+`"}`)
+	require.Equal(t, http.StatusCreated, resp.StatusCode, string(raw))
+
+	t.Run("without the parameter the interface is displayed", func(t *testing.T) {
+		resp, _ := h.do(t, http.MethodGet, "/api/contracts/"+idA, "")
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Empty(t, resp.Header.Get("Content-Disposition"))
+	})
+
+	t.Run("the current interface is offered as a download", func(t *testing.T) {
+		resp, raw := h.do(t, http.MethodGet, "/api/contracts/"+idA+"?download=1", "")
+		require.Equal(t, http.StatusOK, resp.StatusCode, string(raw))
+		assert.Contains(t, resp.Header.Get("Content-Type"), "application/json")
+
+		hash := h.decode(t, raw)["wasm_hash"].(string)
+		// The name is spelled out rather than built from the helper the
+		// handler uses: the .abi.json suffix is part of what the file is
+		// promised to be, and a test that reuses the implementation cannot
+		// notice it changing.
+		assert.Equal(t, idA+"."+hash[:12]+".abi.json",
+			attachmentName(t, resp.Header.Get("Content-Disposition")),
+			"the file must be named after the contract and the version it was decoded from")
+	})
+
+	t.Run("a superseded version is saved under its own hash", func(t *testing.T) {
+		h.fake.Upgrade(idA, moduleWith(t, "v2"))
+		resp, _ := h.do(t, http.MethodPost, "/api/contracts/"+idA+"/refresh", "")
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+
+		oldHash := stellartest.HashOf(old)
+		resp, _ = h.do(t, http.MethodGet, "/api/contracts/"+idA+"?wasm_hash="+oldHash+"&download=1", "")
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, idA+"."+oldHash[:12]+".abi.json",
+			attachmentName(t, resp.Header.Get("Content-Disposition")),
+			"two versions of one contract must not be saved under the same name")
+	})
+
+	t.Run("a contract that is not there is not offered as a file", func(t *testing.T) {
+		resp, _ := h.do(t, http.MethodGet, "/api/contracts/"+idB+"?download=1", "")
+		require.Equal(t, http.StatusNotFound, resp.StatusCode)
+		assert.Empty(t, resp.Header.Get("Content-Disposition"),
+			"a failed request must not name a file to save")
+	})
+}
+
+// attachmentName pulls the file name out of a Content-Disposition header.
+func attachmentName(t *testing.T, header string) string {
+	t.Helper()
+
+	const prefix = `attachment; filename="`
+	require.True(t, strings.HasPrefix(header, prefix),
+		"the response must offer the document as a file, got %q", header)
+
+	name := strings.TrimSuffix(strings.TrimPrefix(header, prefix), `"`)
+	require.NotEmpty(t, name, "a download must be given a name")
+	return name
+}
+
 func TestTypeScriptClient(t *testing.T) {
 	t.Parallel()
 

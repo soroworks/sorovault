@@ -93,7 +93,8 @@
         "parameters": [
           { "$ref": "#/components/parameters/id" },
           { "$ref": "#/components/parameters/network" },
-          { "$ref": "#/components/parameters/wasmHash" }
+          { "$ref": "#/components/parameters/wasmHash" },
+          { "name": "download", "in": "query", "description": "A non-empty value sets Content-Disposition: attachment, so the interface is saved as <contract>.<short-hash>.abi.json.", "schema": { "type": "string" } }
         ],
         "responses": {
           "200": { "description": "The interface.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ContractInterface" }, "examples": { "zkvote": { "$ref": "#/components/examples/ContractInterface" } } } } },
@@ -272,7 +273,7 @@
           { "$ref": "#/components/parameters/id" },
           { "$ref": "#/components/parameters/network" },
           { "$ref": "#/components/parameters/wasmHash" },
-          { "name": "download", "in": "query", "description": "Any value sets Content-Disposition: attachment.", "schema": { "type": "string" } }
+          { "name": "download", "in": "query", "description": "A non-empty value sets Content-Disposition: attachment.", "schema": { "type": "string" } }
         ],
         "responses": {
           "200": { "description": "TypeScript source.", "content": { "text/plain": { "schema": { "type": "string" }, "example": "export const contractId = \\\"CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN\\\";\\nexport const wasmHash = \\\"c618dae264864ccf446a3c7db27da80c7c83e840131242cc2fe9cd32a2a20781\\\";\\n" } } },

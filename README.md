@@ -310,6 +310,7 @@ the same **503**, with the `Retry-After` header, inline on the page.
 | `POST` | `/api/contracts:batch` | register up to 20 contracts in one request — `{"contract_ids": ["C…", "C…"]}` |
 | `POST` | `/api/wasm/{hash}` | catalog uploaded code before a contract runs it |
 | `GET` | `/api/wasm/{hash}` | read a catalogued uploaded-code interface — `?network=` |
+| `GET` | `/api/contracts/{id}` | the decoded ABI — `?network=`, `?wasm_hash=`, `?download=1` |
 | `GET` | `/api/wasm/{hash}/contracts` | every contract running a given WASM — `?network=`, `?ever=`, `?limit=`, `?offset=` |
 | `GET` | `/api/contracts/{id}` | the decoded ABI — `?network=`, `?wasm_hash=` |
 | `PUT` | `/api/contracts/{id}/source` | attach a `source_url` and optional `source_commit` |
@@ -454,6 +455,12 @@ GET /api/wasm/c618dae264864ccf446a3c7db27da80c7c83e840131242cc2fe9cd32a2a20781/c
 and have since been upgraded; each result says whether the contract still runs
 it. The contract page links its WASM hash to this listing.
 
+`?download=1` serves a contract's interface as a file rather than a document
+the browser renders — `<contract>.<short-hash>.abi.json` — which is what the
+browse page's download link uses. The file holds the same document the plain
+`GET` returns: the interface, under `interface`, with the contract's metadata
+beside it.
+
 ## CLI
 
 ```console
@@ -469,6 +476,7 @@ sorovault export [file]             # versioned JSON backup (-o)
 sorovault import [file]             # restore a backup (--merge)
 sorovault serve                     # JSON API + browse UI
 sorovault migrate                   # apply schema migrations
+sorovault migrate status            # --json
 sorovault doctor                    # check a deployment's health
 ```
 
@@ -534,6 +542,55 @@ the network. It reads the same configuration as everything else, so a
 deployment missing its `DATABASE_URL` is reported as a configuration error
 rather than a passing check.
 
+### `sorovault migrate status`
+
+Before an upgrade, an operator wants to know what is applied and what is
+pending — without applying anything. `migrate status` says exactly that, and
+nothing more:
+
+```console
+$ sorovault migrate status
+current version: 2
+latest version:  4
+
+pending migrations:
+  VERSION  NAME
+  3        wasm_specs
+  4        contract_source
+```
+
+The version the database has applied, and whether it is dirty, come from
+golang-migrate — the same source `sorovault migrate` applies, so the two
+cannot disagree. The latest version, and the migrations still to come, are
+the ones embedded in this binary. No migration is applied: a status run
+reports and stops there. It does read the database through golang-migrate,
+which creates the migrator's own version table if the database has not been
+migrated yet — nothing else is written. A database role that may only read
+will therefore fail the command; `sorovault doctor` reads the same state
+without writing anything.
+
+The command exits non-zero when migrations are pending, so it can gate a
+deployment. A database marked **dirty** — a migration that failed partway, so
+the schema is in an unknown state — is reported as such, with what to do
+about it, and also exits non-zero.
+
+`--json` emits the same report as JSON, for a gate that reads it rather than
+a person. The `message` says what the report means and what to do about it,
+so a reader of the JSON is told what a reader of the text report is:
+
+```console
+$ sorovault migrate status --json
+{
+  "current_version": 2,
+  "latest_version": 4,
+  "dirty": false,
+  "pending": [
+    { "version": 3, "name": "wasm_specs" },
+    { "version": 4, "name": "contract_source" }
+  ],
+  "message": "2 migration(s) pending; run `sorovault migrate` to apply them"
+}
+```
 ### Shell completion
 
 `sorovault completion bash|zsh|fish|powershell` prints a completion script (this
