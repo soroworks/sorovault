@@ -63,6 +63,99 @@ func (p *Postgres) Close() error {
 	return nil
 }
 
+// SaveSubscription stores a per-contract webhook subscription.
+func (p *Postgres) SaveSubscription(ctx context.Context, sub Subscription) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	contractIDsJSON, err := json.Marshal(sub.ContractIDs)
+	if err != nil {
+		return err
+	}
+	const q = `
+		INSERT INTO subscriptions (secret, url, contract_ids, created_at, failure_count, disabled)
+		VALUES ($1, $2, $3::jsonb, $4, $5, $6)
+		ON CONFLICT (secret) DO UPDATE SET
+			url = EXCLUDED.url,
+			contract_ids = EXCLUDED.contract_ids,
+			created_at = now(),
+			failure_count = EXCLUDED.failure_count,
+			disabled = EXCLUDED.disabled`
+	_, err = p.pool.Exec(ctx, q, sub.Secret, sub.URL, string(contractIDsJSON), sub.CreatedAt, sub.FailureCount, sub.Disabled)
+	return err
+}
+
+// GetSubscription returns a subscription by its secret.
+func (p *Postgres) GetSubscription(ctx context.Context, secret string) (Subscription, error) {
+	if err := ctx.Err(); err != nil {
+		return Subscription{}, ctx.Err()
+	}
+	const q = `SELECT secret, url, contract_ids, created_at, failure_count, disabled FROM subscriptions WHERE secret = $1`
+	var s Subscription
+	var contractIDsJSON []byte
+	err := p.pool.QueryRow(ctx, q, secret).Scan(&s.Secret, &s.URL, &contractIDsJSON, &s.CreatedAt, &s.FailureCount, &s.Disabled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Subscription{}, ErrNotFound
+	}
+	if err != nil {
+		return Subscription{}, fmt.Errorf("store: getting subscription %s: %w", secret, err)
+	}
+	if err := json.Unmarshal(contractIDsJSON, &s.ContractIDs); err != nil {
+		return Subscription{}, fmt.Errorf("store: decoding subscription contract_ids %s: %w", secret, err)
+	}
+	return s, nil
+}
+
+// ListSubscriptions returns all subscriptions, optionally filtered by contract ID.
+func (p *Postgres) ListSubscriptions(ctx context.Context, contractIDFilter string) ([]Subscription, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, ctx.Err()
+	}
+	q := `SELECT secret, url, contract_ids, created_at, failure_count, disabled FROM subscriptions`
+	args := []interface{}{}
+	if contractIDFilter != "" {
+		q += ` WHERE contract_ids ? $1`
+		args = []interface{}{contractIDFilter}
+	}
+	rows, err := p.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: listing subscriptions: %w", err)
+	}
+	defer rows.Close()
+	var out []Subscription
+	for rows.Next() {
+		var s Subscription
+		var contractIDsJSON []byte
+		if err := rows.Scan(&s.Secret, &s.URL, &contractIDsJSON, &s.CreatedAt, &s.FailureCount, &s.Disabled); err != nil {
+			return nil, fmt.Errorf("store: scanning subscription: %w", err)
+		}
+		if err := json.Unmarshal(contractIDsJSON, &s.ContractIDs); err != nil {
+			return nil, fmt.Errorf("store: decoding subscription contract_ids: %w", err)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: listing subscriptions: %w", err)
+	}
+	return out, nil
+}
+
+// DeleteSubscription removes a subscription by its secret.
+func (p *Postgres) DeleteSubscription(ctx context.Context, secret string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	const q = `DELETE FROM subscriptions WHERE secret = $1`
+	tag, err := p.pool.Exec(ctx, q, secret)
+	if err != nil {
+		return fmt.Errorf("store: deleting subscription %s: %w", secret, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: subscription %s", ErrNotFound, secret)
+	}
+	return nil
+}
+
 // SaveWasmSpec stores an interface for uploaded code independent of contracts.
 func (p *Postgres) SaveWasmSpec(ctx context.Context, network, wasmHash string, iface *model.Interface) error {
 	if iface == nil {

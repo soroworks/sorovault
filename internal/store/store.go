@@ -308,6 +308,27 @@ type Stats struct {
 	Latest *Contract `json:"latest_contract,omitempty"`
 }
 
+// Subscription records a per-contract webhook subscription.
+//
+// URL is the endpoint to POST changes to. Secret, when set, signs each
+// payload with HMAC-SHA256. ContractIDs specifies which contracts this
+// subscription applies to; empty means all contracts.
+type Subscription struct {
+	ID          string    `json:"id"`
+	URL         string    `json:"url"`
+	Secret      string    `json:"secret,omitempty"`
+	ContractIDs []string  `json:"contract_ids,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	// FailureCount tracks how many consecutive deliveries have failed.
+	// After MaxSubscriptionFailures, the subscription is disabled.
+	FailureCount int  `json:"failure_count"`
+	Disabled     bool `json:"disabled"`
+}
+
+// MaxSubscriptionFailures is the number of consecutive delivery failures
+// after which a subscription is automatically disabled.
+const MaxSubscriptionFailures = 3
+
 // Upgrade is one recorded interface upgrade: the version a contract ran
 // before, the version it moved to, and when the new one was observed.
 //
@@ -469,4 +490,10 @@ type Store interface {
 
 	// Close releases any resources held by the store.
 	Close() error
+
+	// Subscription operations
+	SaveSubscription(ctx context.Context, sub Subscription) error
+	GetSubscription(ctx context.Context, secret string) (Subscription, error)
+	ListSubscriptions(ctx context.Context, contractIDFilter string) ([]Subscription, error)
+	DeleteSubscription(ctx context.Context, secret string) error
 }

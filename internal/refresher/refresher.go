@@ -8,10 +8,14 @@
 package refresher
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
@@ -37,7 +41,9 @@ type Options struct {
 	// beyond the sweep's own context.
 	Timeout time.Duration
 	// Notifier, when set, is told about every contract whose interface
-	// changed during a sweep. Delivery is best effort.
+	// changed during a sweep. Delivery is best effort. The notifier can be
+	// a *refresher.Webhook for a global endpoint, or a *refresher.subscriptionNotifier
+	// for per-contract subscriptions. Both implement refresher.Notifier.
 	Notifier Notifier
 	// Logger receives one line per sweep and one per failure. Defaults to
 	// slog.Default.
@@ -282,11 +288,8 @@ func (r *Refresher) sweep(ctx context.Context, all bool) (Summary, error) {
 	return sum, nil
 }
 
-// notify tells the notifier that a contract's interface changed.
-//
-// A delivery that fails is logged and otherwise ignored: the sweep exists to
-// keep the registry up to date, and how fast a receiver reads about it is
-// the receiver's business.
+// notify tells the notifier that a contract's interface changed, and also
+// delivers to per-contract subscriptions if a store is available.
 func (r *Refresher) notify(ctx context.Context, network string, result *registry.Result) {
 	if r.notifier == nil {
 		return
@@ -301,9 +304,62 @@ func (r *Refresher) notify(ctx context.Context, network string, result *registry
 		ChangedAt:    r.now().UTC(),
 	}
 
+	// Deliver to the configured notifier (e.g. global webhook)
 	if err := r.notifier.Notify(ctx, change); err != nil {
 		r.log.WarnContext(ctx, "refresh webhook failed",
 			"contract_id", change.ContractID, "network", network, "error", err)
+	}
+
+	// Also deliver to per-contract subscriptions from the store
+	deliverToSubscriptions(ctx, r.reg.Store(), change, r.log)
+}
+
+// deliverToSubscriptions looks up subscriptions for the contract from the
+// store and delivers the change to each matching subscription.
+func deliverToSubscriptions(ctx context.Context, s store.Store, change Change, logger *slog.Logger) {
+	if s == nil {
+		return
+	}
+	subs, err := s.ListSubscriptions(ctx, change.ContractID)
+	if err != nil {
+		logger.WarnContext(ctx, "refresh: listing subscriptions for contract",
+			"contract_id", change.ContractID, "error", err)
+		return
+	}
+	for _, sub := range subs {
+		// Deliver to each subscription's URL with HMAC signature
+		body, err := json.Marshal(change)
+		if err != nil {
+			logger.ErrorContext(ctx, "refresh: encoding subscription payload",
+				"error", err)
+			continue
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, sub.URL, bytes.NewReader(body))
+		if err != nil {
+			logger.ErrorContext(ctx, "refresh: building subscription request",
+				"error", err)
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if sub.Secret != "" {
+			req.Header.Set("X-SoroVault-Signature", Sign(sub.Secret, body))
+		}
+		req.Header.Set("User-Agent", "sorovault-refresher")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			logger.WarnContext(ctx, "refresh: posting subscription webhook failed",
+				"subscription_secret", sub.Secret, "contract_id", change.ContractID, "error", err)
+			continue
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+
+		if resp.StatusCode < 200 || resp.StatusCode > 299 {
+			logger.WarnContext(ctx, "refresh: subscription returned unexpected status",
+				"subscription_secret", sub.Secret, "contract_id", change.ContractID, "status", resp.StatusCode)
+		}
 	}
 }
 
