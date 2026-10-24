@@ -1,0 +1,67 @@
+name: Scorecard
+
+# The Scorecard measures how the project is maintained, not what it builds,
+# so it runs on its own schedule and after every merge to main:
+#
+#   1. ossf/scorecard-action analyses the repository and writes a SARIF file.
+#   2. The SARIF file is uploaded to the code scanning dashboard, where each
+#      check turns into an alert.
+#   3. The results are published, which is what keeps the README badge
+#      current.
+#
+# The action supports the push and schedule triggers, and only a push to the
+# default branch, so those are the two used here.
+
+on:
+  push:
+    branches: [main]
+  # The score moves even when the code does not — a new advisory changes the
+  # Vulnerabilities check, a new release changes Signed-Releases — so the
+  # scan is repeated weekly.
+  schedule:
+    - cron: "23 4 * * 3"
+
+permissions:
+  contents: read
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      # Uploading the SARIF results to the code scanning dashboard.
+      security-events: write
+      # The OIDC token the action uses to publish the results and update the
+      # badge. The action insists this is granted to this job alone.
+      id-token: write
+      # Reading the repository the action analyses.
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Publishing the results replaces the OpenSSF team's weekly scan of
+          # this repository with our own, and is what makes the README badge
+          # show this project's score.
+          publish_results: true
+
+      # Keep the SARIF file for five days, so a failed run can be inspected.
+      - name: Upload artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: SARIF file
+          path: results.sarif
+          retention-days: 5
+
+      # The code scanning dashboard is where the individual checks are read.
+      - name: Upload to code scanning
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: results.sarif
