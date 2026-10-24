@@ -647,9 +647,17 @@ selectable text.
 
 `POST /api/wasm/{hash}` catalogs uploaded code by its 64-character SHA-256
 hash, even before a contract instance uses it. Its decoded interface is then
-available from `GET /api/wasm/{hash}`. Attach a contract repository URL and an
-optional 40- or 64-character commit hash with `PUT /api/contracts/{id}/source`;
-the browse page displays the repository and commit with the interface.
+available from `GET /api/wasm/{hash}`. To see what a module would expose
+before it is ever deployed — a doc comment that should have rendered, a type
+that should have changed — `POST /api/decode` with the file as the request
+body (raw or as a `multipart/form-data` file) answers with the ABI JSON and
+stores nothing; `?format=ts` returns the generated TypeScript client
+instead. The body is limited to 512 KiB, four times the 128 KiB the network
+allows as contract code.
+
+Attach a contract repository URL and an optional 40- or 64-character commit
+hash with `PUT /api/contracts/{id}/source`; the browse page displays the
+repository and commit with the interface.
 
 ## The ABI JSON
 

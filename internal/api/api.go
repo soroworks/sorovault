@@ -14,7 +14,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -182,6 +184,126 @@ func (s *Server) catalogWasm(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusCreated
 	}
 	writeJSON(w, status, result)
+}
+
+// maxDecodeBody caps an uploaded module at 512 KiB — four times the 128 KiB
+// the network allows as contract code, so any module that could ever run on
+// chain fits. It stays deliberately small because this is the only endpoint
+// that reads an arbitrary blob, and each concurrent upload is held in full:
+// until per-client rate limiting exists, the body limit is what bounds
+// memory under a flood of requests.
+const maxDecodeBody = 512 << 10
+
+// errDecodeTooLarge reports an upload beyond maxDecodeBody, so the handler
+// can answer 413 instead of the 400 every other malformed body earns.
+var errDecodeTooLarge = fmt.Errorf("request body exceeds the %d-byte limit", maxDecodeBody)
+
+// decodeWasm serves POST /api/decode: it decodes an uploaded WASM module
+// and returns its interface, without storing anything. The endpoint touches
+// neither the network nor the database, and reuses spec.XDRDecoder — the
+// same decoder every other path goes through, so its limits apply here
+// unchanged.
+//
+// The body is either the raw module, whatever the content type, or a
+// multipart/form-data upload whose first file part carries it. ?format=ts
+// answers with the TypeScript client for the interface instead of the ABI
+// JSON.
+func (s *Server) decodeWasm(w http.ResponseWriter, r *http.Request) {
+	format := r.URL.Query().Get("format")
+	if format != "" && format != "json" && format != "ts" {
+		writeError(w, http.StatusBadRequest, "format must be \"json\" or \"ts\"")
+		return
+	}
+
+	module, err := readWasmBody(r, maxDecodeBody)
+	switch {
+	case errors.Is(err, errDecodeTooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, err.Error())
+		return
+	case err != nil:
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Every decoder failure is a property of the upload — an unparseable
+	// module, a missing spec section, an entry stream that does not
+	// convert — never a server fault, so none of it becomes a 500.
+	var decoder spec.XDRDecoder
+	iface, err := decoder.Decode(module)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+
+	if format == "ts" {
+		// There is no contract ID or network yet — the module is not
+		// deployed — so only the hash, derived from the bytes at hand,
+		// identifies the interface version the client was built from.
+		sum := sha256.Sum256(module)
+		source, err := codegen.TypeScript(iface, codegen.Source{
+			WasmHash: hex.EncodeToString(sum[:]),
+		})
+		if err != nil {
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte(source))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, iface)
+}
+
+// readWasmBody reads the uploaded module from r: a raw body, or the first
+// file part of a multipart/form-data upload. It rejects an empty body and
+// anything larger than limit, which is enforced as the bytes arrive, so an
+// oversized upload is never held in full.
+func readWasmBody(r *http.Request, limit int) ([]byte, error) {
+	var body io.Reader = r.Body
+
+	if mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err == nil && mediaType == "multipart/form-data" {
+		file, err := multipartWasmFile(r)
+		if err != nil {
+			return nil, err
+		}
+		body = file
+	}
+
+	module, err := io.ReadAll(io.LimitReader(body, int64(limit)+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading request body: %w", err)
+	}
+	if len(module) > limit {
+		return nil, errDecodeTooLarge
+	}
+	if len(module) == 0 {
+		return nil, errors.New("request body is empty")
+	}
+	return module, nil
+}
+
+// multipartWasmFile returns the first file part of a multipart upload — the
+// part a browser or curl calls a file. Plain fields are skipped, so a form
+// carrying no file is refused rather than decoded as if its field names
+// were a WASM module.
+func multipartWasmFile(r *http.Request) (io.Reader, error) {
+	mr, err := r.MultipartReader()
+	if err != nil {
+		return nil, fmt.Errorf("invalid multipart body: %w", err)
+	}
+	for {
+		part, err := mr.NextPart()
+		if errors.Is(err, io.EOF) {
+			return nil, errors.New("multipart body contains no file part")
+		}
+		if err != nil {
+			return nil, fmt.Errorf("invalid multipart body: %w", err)
+		}
+		if part.FileName() != "" {
+			return part, nil
+		}
+	}
 }
 
 func (s *Server) updateContractSource(w http.ResponseWriter, r *http.Request) {
