@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -15,7 +16,7 @@ import (
 	"github.com/soroworks/sorovault/internal/model"
 )
 
-var update = flag.Bool("update", false, "rewrite the golden TypeScript client")
+var update = flag.Bool("update", false, "rewrite the golden files")
 
 func ptr(t model.Type) *model.Type { return &t }
 
@@ -42,12 +43,44 @@ func TestGoldenZKVote(t *testing.T) {
 
 	golden := filepath.Join("testdata", "zkvote.client.ts")
 	if *update {
-		require.NoError(t, os.WriteFile(golden, []byte(got), 0o644))
+		require.NoError(t, os.WriteFile(golden, []byte(got), 0o600))
 		t.Logf("wrote %s", golden)
 	}
-	want, err := os.ReadFile(golden)
+	want, err := os.ReadFile(golden) //nolint:gosec // test-owned golden path
 	require.NoError(t, err, "golden file missing; regenerate with -update")
 	assert.Equal(t, string(want), got, "generated client changed; if intended, rerun with -update")
+}
+
+// TestGoldenPackage generates the npm package built around the golden client
+// and compares it with the checked-in files. CI runs npm install and npm run
+// build in that directory, so the package is known to build from scratch,
+// not merely to be stable.
+func TestGoldenPackage(t *testing.T) {
+	t.Parallel()
+
+	raw, err := os.ReadFile("../spec/testdata/zkvote.golden.json")
+	require.NoError(t, err)
+	var iface model.Interface
+	require.NoError(t, json.Unmarshal(raw, &iface))
+
+	files, err := codegen.Package(&iface, src, codegen.PackageOptions{Name: "zkvote-client"})
+	require.NoError(t, err)
+
+	dir := filepath.Join("testdata", "zkvote-pkg")
+	if *update {
+		for _, file := range files {
+			path := filepath.Join(dir, filepath.FromSlash(file.Path))
+			require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o750))
+			require.NoError(t, os.WriteFile(path, file.Data, 0o600))
+		}
+	}
+
+	for _, file := range files {
+		want, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(file.Path))) //nolint:gosec // paths come from the generator, not the caller
+		require.NoErrorf(t, err, "%s is missing; regenerate with -update", file.Path)
+		assert.Equal(t, string(want), string(file.Data),
+			"%s changed; if intended, rerun with -update", file.Path)
+	}
 }
 
 func TestTypeMapping(t *testing.T) {
@@ -143,11 +176,68 @@ func TestRejectsConflictingErrorCodes(t *testing.T) {
 	assert.ErrorContains(t, err, "error code 1")
 }
 
-func TestRejectsInvalidFunctionName(t *testing.T) {
+func TestQuotesInvalidFunctionName(t *testing.T) {
 	t.Parallel()
 	iface := &model.Interface{Functions: []model.Function{{Name: "not-valid"}}}
-	_, err := codegen.TypeScript(iface, src)
-	assert.ErrorContains(t, err, "not a valid identifier")
+	got, err := codegen.TypeScript(iface, src)
+	require.NoError(t, err)
+	assert.Contains(t, got, `  "not-valid"(options?: sdk.MethodOptions):`)
+}
+
+func FuzzTypeScript(f *testing.F) {
+	f.Add("Config", "fee-bps", "doc with */ terminator", []byte{0, 1, 2})
+	f.Add("class", "quoted\"name", "multiline\ndoc", []byte{3, 4, 5})
+	f.Add("bad-name", "", "", []byte{})
+
+	f.Fuzz(func(t *testing.T, name, fieldName, doc string, shapes []byte) {
+		types := []model.Type{
+			model.Scalar(model.KindBool),
+			model.Scalar(model.KindU32),
+			model.Scalar(model.KindString),
+			{Kind: model.KindOption, Inner: ptr(model.Scalar(model.KindI64))},
+			{Kind: model.KindVec, Element: ptr(model.Scalar(model.KindAddress))},
+			{Kind: model.KindMap, Key: ptr(model.Scalar(model.KindSymbol)), Value: ptr(model.Scalar(model.KindU128))},
+			{Kind: model.KindTuple, Elements: []model.Type{model.Scalar(model.KindBool), model.Scalar(model.KindBytes)}},
+		}
+		shapeAt := func(index int) model.Type {
+			if len(shapes) == 0 {
+				return types[0]
+			}
+			return types[int(shapes[index%len(shapes)])%len(types)]
+		}
+
+		iface := &model.Interface{
+			Types: model.Types{Structs: []model.Struct{{Name: name, Doc: doc, Fields: []model.StructField{{
+				Name: fieldName, Doc: doc, Type: shapeAt(0),
+			}}}}},
+			Functions: []model.Function{{Name: name, Doc: doc, Inputs: []model.Param{{
+				Name: fieldName, Type: shapeAt(1),
+			}}}},
+		}
+
+		got, err := codegen.TypeScript(iface, src)
+		require.NoError(t, err)
+
+		declaredNames := regexp.MustCompile(`(?m)^export (?:interface|type|enum) ([^\s{=]+)`)
+		for _, match := range declaredNames.FindAllStringSubmatch(got, -1) {
+			assert.Regexp(t, `^[A-Za-z_$][A-Za-z0-9_$]*$`, match[1])
+		}
+
+		inDoc := false
+		for _, line := range strings.Split(got, "\n") {
+			if strings.Contains(line, "/**") {
+				inDoc = true
+				continue
+			}
+			if inDoc {
+				if strings.TrimSpace(line) == "*/" {
+					inDoc = false
+					continue
+				}
+				assert.NotContains(t, line, "*/")
+			}
+		}
+	})
 }
 
 func TestOutputIsDeterministic(t *testing.T) {

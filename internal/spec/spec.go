@@ -25,6 +25,25 @@ import (
 // built with the spec section stripped.
 var ErrNoSpecSection = errors.New("spec: contract has no contractspecv0 section")
 
+// ErrLimitExceeded reports that a module or interface is larger or deeper
+// than SoroVault is willing to decode. It is a property of the input, not a
+// server fault, so the API reports it as 422 instead of 500.
+var ErrLimitExceeded = errors.New("spec: interface exceeds decode limits")
+
+const (
+	// MaxSpecSectionSize bounds the contractspecv0 section we will decode.
+	// The network's 128 KiB module cap already bounds it today; 1 MiB leaves
+	// headroom for that cap to grow while ensuring a hostile section cannot
+	// be read, copied and decoded without limit.
+	MaxSpecSectionSize = 1 << 20
+
+	// MaxSpecEntries bounds how many SCSpecEntry values a section may hold.
+	// A real contract has tens to low hundreds; 10,000 is far above any
+	// legitimate interface and stops a section made of millions of tiny
+	// entries from filling memory with decoded values.
+	MaxSpecEntries = 10_000
+)
+
 // Decoder turns a contract's WASM into its decoded interface.
 //
 // It exists so callers can be tested against a stub, and so an alternative
@@ -51,6 +70,11 @@ func (XDRDecoder) Decode(wasmModule []byte) (*model.Interface, error) {
 		if errors.Is(err, wasm.ErrSectionNotFound) {
 			return nil, ErrNoSpecSection
 		}
+		if errors.Is(err, wasm.ErrModuleTooLarge) {
+			// Keep both sentinels matchable: this is a decode limit, and it
+			// came from the module reader.
+			return nil, fmt.Errorf("%w: %w", ErrLimitExceeded, err)
+		}
 		return nil, err
 	}
 
@@ -70,16 +94,31 @@ func (XDRDecoder) Decode(wasmModule []byte) (*model.Interface, error) {
 	}
 	iface.Meta = meta
 
+	envMeta, err := decodeEnvMeta(wasmModule)
+	if err != nil {
+		return nil, err
+	}
+	iface.EnvMeta = envMeta
+
 	return iface, nil
 }
 
 // ReadEntries decodes the concatenated stream of SCSpecEntry values that
 // makes up a "contractspecv0" section body.
 func ReadEntries(section []byte) ([]xdr.ScSpecEntry, error) {
+	if len(section) > MaxSpecSectionSize {
+		return nil, fmt.Errorf("%w: spec section is %d bytes, limit is %d",
+			ErrLimitExceeded, len(section), MaxSpecSectionSize)
+	}
+
 	var entries []xdr.ScSpecEntry
 
 	r := bytes.NewReader(section)
 	for r.Len() > 0 {
+		if len(entries) == MaxSpecEntries {
+			return nil, fmt.Errorf("%w: more than %d spec entries", ErrLimitExceeded, MaxSpecEntries)
+		}
+
 		var entry xdr.ScSpecEntry
 		if _, err := xdr.Unmarshal(r, &entry); err != nil {
 			return nil, fmt.Errorf("spec: decoding entry %d: %w", len(entries), err)
@@ -92,6 +131,11 @@ func ReadEntries(section []byte) ([]xdr.ScSpecEntry, error) {
 
 // FromEntries converts decoded XDR entries into the public interface model.
 func FromEntries(entries []xdr.ScSpecEntry) (*model.Interface, error) {
+	if len(entries) > MaxSpecEntries {
+		return nil, fmt.Errorf("%w: %d spec entries, limit is %d",
+			ErrLimitExceeded, len(entries), MaxSpecEntries)
+	}
+
 	iface := &model.Interface{
 		ABIVersion: model.ABIVersion,
 		Functions:  []model.Function{},
@@ -415,4 +459,52 @@ func decodeMeta(wasmModule []byte) (map[string]string, error) {
 		return nil, nil
 	}
 	return meta, nil
+}
+
+// decodeEnvMeta reads the optional "contractenvmetav0" section, which
+// records the host environment the contract was built against.
+//
+// The section holds a stream of SCEnvMetaEntry values. The only kind there
+// is today is the interface version, which the host checks before it runs
+// the contract: a contract built for the same or an older protocol version
+// runs, and a contract with a different pre-release number does not.
+//
+// The interface version used to be one 64-bit number that packed the
+// protocol version into its high half and the pre-release number into its
+// low half; the XDR now spells the two out as separate 32-bit fields. The
+// bytes mean the same thing either way — XDR is big-endian, so the high
+// half comes first — and a section written by an older toolchain still
+// decodes.
+func decodeEnvMeta(wasmModule []byte) (*model.EnvMeta, error) {
+	section, err := wasm.CustomSection(wasmModule, wasm.SectionContractEnvMeta)
+	if err != nil {
+		if errors.Is(err, wasm.ErrSectionNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var out *model.EnvMeta
+	r := bytes.NewReader(section)
+	for r.Len() > 0 {
+		var entry xdr.ScEnvMetaEntry
+		if _, err := xdr.Unmarshal(r, &entry); err != nil {
+			if errors.Is(err, io.ErrUnexpectedEOF) {
+				break
+			}
+			return nil, fmt.Errorf("spec: decoding env meta entry: %w", err)
+		}
+		if entry.Kind != xdr.ScEnvMetaKindScEnvMetaKindInterfaceVersion || entry.InterfaceVersion == nil {
+			// A kind this build predates. Skipping it keeps the rest of the
+			// metadata available.
+			continue
+		}
+		meta := model.NewEnvMeta(
+			uint32(entry.InterfaceVersion.Protocol),
+			uint32(entry.InterfaceVersion.PreRelease),
+		)
+		out = &meta
+	}
+
+	return out, nil
 }

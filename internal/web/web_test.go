@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/soroworks/sorovault/internal/api"
 	"github.com/soroworks/sorovault/internal/model"
 	"github.com/soroworks/sorovault/internal/registry"
 	"github.com/soroworks/sorovault/internal/spec"
@@ -56,7 +59,14 @@ func newHarness(t *testing.T) *harness {
 	return &harness{server: srv, fake: fake, reg: reg, store: memory}
 }
 
-func (h *harness) get(t *testing.T, path string) (*http.Response, string) {
+// response is the part of an *http.Response the tests inspect. The harness
+// consumes and closes the body before returning, so callers cannot leak it.
+type response struct {
+	StatusCode int
+	Header     http.Header
+}
+
+func (h *harness) get(t *testing.T, path string) (*response, string) {
 	t.Helper()
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, h.server.URL+path, nil)
@@ -64,11 +74,46 @@ func (h *harness) get(t *testing.T, path string) (*http.Response, string) {
 
 	resp, err := h.server.Client().Do(req)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = resp.Body.Close() })
 
 	raw, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	return resp, string(raw)
+	require.NoError(t, resp.Body.Close())
+	return &response{StatusCode: resp.StatusCode, Header: resp.Header}, string(raw)
+}
+
+// postForm submits the registration form without following the redirect, so
+// a test can assert on the status and Location it produced.
+func (h *harness) postForm(t *testing.T, path string, form url.Values, headers map[string]string) (*response, string) {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		h.server.URL+path, strings.NewReader(form.Encode()))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	return &response{StatusCode: resp.StatusCode, Header: resp.Header}, string(raw)
+}
+
+// deploy puts the real testnet fixture on the fake network under the given
+// ID, without registering it.
+func (h *harness) deploy(t *testing.T, id string) {
+	t.Helper()
+
+	module, err := os.ReadFile("../spec/testdata/zkvote.wasm")
+	require.NoError(t, err)
+	h.fake.Deploy(id, module)
 }
 
 // register puts the real testnet fixture into the registry under the given ID.
@@ -106,6 +151,28 @@ func TestIndexEmpty(t *testing.T) {
 	assert.Contains(t, resp.Header.Get("Content-Type"), "text/html")
 	assert.Contains(t, body, "No contracts registered yet")
 	assert.Contains(t, body, "sorovault add")
+}
+
+// TestIndexListsContracts proves a contract that has gone missing is
+// marked in the listing, so a reader can tell it apart from a live one.
+func TestIndexMarksMissingContracts(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.register(t, idA)
+
+	h.fake.Remove(idA)
+	_, err := h.reg.Refresh(context.Background(), idA)
+	require.NoError(t, err)
+
+	resp, body := h.get(t, "/")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Contains(t, body, "missing",
+		"the listing marks a contract that is no longer on the network")
+
+	resp, body = h.get(t, "/contracts/"+idA)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Contains(t, body, "not on the network any more")
 }
 
 func TestIndexListsContracts(t *testing.T) {
@@ -234,7 +301,7 @@ func TestContractPage(t *testing.T) {
 
 	h := newHarness(t)
 	h.register(t, idA)
-	require.NoError(t, h.store.UpdateSource(context.Background(), "testnet", idA,
+	require.NoError(t, h.reg.Store().UpdateSource(context.Background(), "testnet", idA,
 		"https://github.com/soroworks/sorovault", "0123456789abcdef0123456789abcdef01234567"))
 
 	resp, body := h.get(t, "/contracts/"+idA)
@@ -247,6 +314,16 @@ func TestContractPage(t *testing.T) {
 	assert.Contains(t, body, `<span class="type-parameter">32</span>`)
 	assert.Contains(t, body, `<a class="type-reference" href="#type-VoteParams">VoteParams</a>`)
 	assert.Contains(t, body, `<span class="type-definition" id="type-VoteParams">VoteParams</span>`)
+	// Every symbol has an anchor of its own, prefixed by kind so a function
+	// and a type that share a name do not collide.
+	assert.Contains(t, body, `id="fn-has_voted"`)
+	assert.Contains(t, body, `href="#fn-has_voted"`)
+	assert.Contains(t, body, `id="fn-vote"`)
+	assert.Contains(t, body, `id="type-VoteParams"`)
+	assert.Contains(t, body, `href="#type-VoteParams"`)
+	assert.Contains(t, body, `id="event-Voted"`)
+	assert.Contains(t, body, `href="#event-Voted"`)
+	assert.Contains(t, body, `class="anchor"`, "each heading carries a visible link to itself")
 	assert.Contains(t, body, `<span class="type-keyword">error</span> <span class="type-definition" id="type-Error">Error</span>`)
 	assert.Contains(t, body, "Voted", "the event should be listed")
 	assert.Contains(t, body, "rssdkver", "build metadata should be shown")
@@ -254,6 +331,33 @@ func TestContractPage(t *testing.T) {
 	assert.Contains(t, body, "0123456789abcdef0123456789abcdef01234567")
 	assert.Contains(t, body, "current")
 	assert.Contains(t, body, "/api/contracts/"+idA+"/client.ts?", "the typed client should be linked")
+}
+
+// TestContractPageOffersTheABIDownload proves the page links to the
+// interface as a file, and not only to the document the browser renders.
+func TestContractPageOffersTheABIDownload(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.register(t, idA)
+
+	const hash = "c618dae264864ccf446a3c7db27da80c7c83e840131242cc2fe9cd32a2a20781"
+
+	resp, body := h.get(t, "/contracts/"+idA)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	assert.Contains(t, body,
+		`href="/api/contracts/`+idA+`?network=testnet&amp;wasm_hash=`+hash+`&amp;download=1"`,
+		"the page should link to the interface as a download")
+
+	// The name is spelled out here rather than built from the API's own
+	// helper: the .abi.json suffix is what the file is promised to be, and
+	// a test that reuses the implementation cannot notice it changing.
+	const want = idA + ".c618dae26486.abi.json"
+	assert.Equal(t, want, api.ABIFilename(idA, hash),
+		"a downloaded interface must be named <contract>.<short-hash>.abi.json")
+	assert.Contains(t, body, want,
+		"the link should say what the downloaded file will be called")
 }
 
 // TestContractPageEscapesOutput guards against a contract's own strings
@@ -269,6 +373,136 @@ func TestContractPageEscapesOutput(t *testing.T) {
 	// Rendered generic types must appear escaped, never as live tags.
 	assert.NotContains(t, body, "<BytesN<32>>")
 	assert.Contains(t, body, "&lt;")
+}
+
+// TestContractPageRendersDocsAsMarkdown proves the documentation is
+// rendered as Markdown, and that a doc cannot smuggle markup into the
+// page: docs come from an untrusted chain.
+func TestContractPageRendersDocsAsMarkdown(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	doc := "### Signals\n\n| idx | meaning |\n|-----|---------|\n| 0   | one     |\n\n" +
+		"* first\n* second\n\nCast a vote <script>alert(1)</script> now.\n"
+
+	iface := &model.Interface{
+		ABIVersion: model.ABIVersion,
+		Functions:  []model.Function{{Name: "vote", Doc: doc}},
+		Types: model.Types{
+			Structs: []model.Struct{}, Unions: []model.Union{},
+			Enums: []model.Enum{}, ErrorEnums: []model.ErrorEnum{},
+		},
+		Events: []model.Event{},
+	}
+	require.NoError(t, h.reg.Store().Save(context.Background(), store.Contract{
+		ContractID: idA, Network: "testnet", CurrentWasmHash: "hash-a",
+	}, iface))
+
+	resp, body := h.get(t, "/contracts/"+idA)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	assert.Contains(t, body, "<h3>Signals</h3>", "the heading in the doc should be rendered")
+	assert.Contains(t, body, "<table>", "the table in the doc should be rendered")
+	assert.Contains(t, body, "<li>first</li>", "the bullet list in the doc should be rendered")
+
+	// The script in the doc must not reach the page as markup.
+	assert.NotContains(t, body, "<script>alert",
+		"a script in a doc must never be rendered as a tag")
+
+	_, index := h.get(t, "/")
+	assert.Equal(t, strings.Count(index, "<script"), strings.Count(body, "<script"),
+		"the documentation must not add a script to the page")
+}
+
+// TestContractPageShowsProtocolVersion proves the contract page says which
+// protocol the contract was built against.
+func TestContractPageShowsProtocolVersion(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.register(t, idA)
+
+	_, body := h.get(t, "/contracts/"+idA)
+
+	// The fixture was built against protocol 25.
+	assert.Contains(t, body, "<dt>Protocol</dt>")
+	assert.Contains(t, body, `<dd class="mono">25</dd>`)
+}
+
+// TestContractPageLinksTheWasmHash proves the contract page offers the
+// list of the other contracts running the same code.
+func TestContractPageLinksTheWasmHash(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.register(t, idA)
+
+	const hash = "c618dae264864ccf446a3c7db27da80c7c83e840131242cc2fe9cd32a2a20781"
+
+	_, body := h.get(t, "/contracts/"+idA)
+	assert.Contains(t, body, "/api/wasm/"+hash+"/contracts",
+		"the WASM hash should link to the contracts that run it")
+}
+
+// TestContractPageHasCopyButtons proves the values people paste into other
+// tools can be copied.
+func TestContractPageHasCopyButtons(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.register(t, idA)
+
+	_, body := h.get(t, "/contracts/"+idA)
+
+	assert.Contains(t, body, `data-copy="#contract-id"`)
+	assert.Contains(t, body, `data-copy="#wasm-hash"`)
+	assert.Contains(t, body, `data-copy="#sig-vote"`,
+		"a function signature should be copyable")
+	assert.Contains(t, body, `aria-label="Copy contract ID"`,
+		"a button needs a name a screen reader can read out")
+
+	resp, script := h.get(t, "/static/copy.js")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Contains(t, script, "navigator.clipboard")
+	assert.Contains(t, script, `aria-live`, "the copy has to be announced")
+}
+
+// TestCopyButtonsNeedJavaScript proves the buttons stay hidden without
+// JavaScript, so the values they copy remain plain, selectable text.
+func TestCopyButtonsNeedJavaScript(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+
+	resp, css := h.get(t, "/static/app.css")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Contains(t, css, ".copy { display: none; }",
+		"the buttons must be hidden until the script that handles them runs")
+	assert.Contains(t, css, "html.js .copy",
+		"the script marks the document, and that is what reveals the buttons")
+}
+
+// TestContractPageEscapesAnchorIDs proves a contract's own name cannot break
+// out of the id it is written into.
+func TestContractPageEscapesAnchorIDs(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	iface := &model.Interface{
+		ABIVersion: model.ABIVersion,
+		Functions:  []model.Function{{Name: `evil"><script>alert(1)</script>`}},
+	}
+	require.NoError(t, h.reg.Store().Save(context.Background(), store.Contract{
+		ContractID:      idA,
+		Network:         "testnet",
+		CurrentWasmHash: "hash-a",
+	}, iface))
+
+	_, body := h.get(t, "/contracts/"+idA)
+
+	assert.NotContains(t, body, "<script>")
+	assert.Contains(t, body, "fn-evil", "the anchor is still rendered, escaped")
+	assert.Contains(t, body, "&#34;", "the quote in the name is escaped in the attribute")
 }
 
 func TestContractPageNotFound(t *testing.T) {
@@ -297,6 +531,124 @@ func TestContractPageOldVersion(t *testing.T) {
 
 	resp, _ = h.get(t, "/contracts/"+idA+"?wasm_hash=deadbeef")
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestIndexHasRegisterForm(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+
+	_, body := h.get(t, "/")
+	assert.Contains(t, body, `action="/contracts"`, "the form works without JavaScript")
+	assert.Contains(t, body, `method="post"`)
+	assert.Contains(t, body, `name="contract_id"`)
+	assert.Contains(t, body, `hx-post="/contracts"`, "the form is enhanced with htmx")
+}
+
+func TestRegisterFormRegistersAndRedirects(t *testing.T) {
+	t.Parallel()
+
+	t.Run("origin header", func(t *testing.T) {
+		h := newHarness(t)
+		h.deploy(t, idA)
+
+		resp, _ := h.postForm(t, "/contracts", url.Values{"contract_id": {idA}},
+			map[string]string{"Origin": h.server.URL})
+		require.Equal(t, http.StatusSeeOther, resp.StatusCode)
+		assert.Equal(t, "/contracts/"+idA+"?network=testnet", resp.Header.Get("Location"))
+
+		resp, body := h.get(t, "/contracts/"+idA)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Contains(t, body, idA)
+	})
+
+	t.Run("referer fallback", func(t *testing.T) {
+		h := newHarness(t)
+		h.deploy(t, idA)
+
+		resp, _ := h.postForm(t, "/contracts", url.Values{"contract_id": {idA}},
+			map[string]string{"Referer": h.server.URL + "/"})
+		assert.Equal(t, http.StatusSeeOther, resp.StatusCode)
+	})
+}
+
+// TestRegisterFormRejectsCrossSite proves the write is guarded: a browser
+// names the initiating origin, and a page cannot forge it.
+func TestRegisterFormRejectsCrossSite(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.deploy(t, idA)
+
+	for name, headers := range map[string]map[string]string{
+		"foreign origin": {"Origin": "https://evil.example"},
+		"no source":      {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp, body := h.postForm(t, "/contracts", url.Values{"contract_id": {idA}}, headers)
+			assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+			assert.Contains(t, body, "must be submitted from SoroVault")
+		})
+	}
+
+	_, err := h.reg.Store().GetContract(context.Background(), "testnet", idA)
+	assert.ErrorIs(t, err, store.ErrNotFound, "a rejected post must not register anything")
+}
+
+// TestRegisterFormErrorsAreInline checks the errors carry the same meaning as
+// the API's status codes, and land on the page rather than in a JSON body.
+func TestRegisterFormErrorsAreInline(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+
+	t.Run("empty ID", func(t *testing.T) {
+		headers := map[string]string{"Origin": h.server.URL}
+		resp, body := h.postForm(t, "/contracts", url.Values{"contract_id": {""}}, headers)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		assert.Contains(t, body, "Enter a contract ID")
+	})
+
+	t.Run("invalid ID", func(t *testing.T) {
+		headers := map[string]string{"Origin": h.server.URL}
+		resp, body := h.postForm(t, "/contracts", url.Values{"contract_id": {"not-a-contract"}}, headers)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		assert.Contains(t, body, "not a valid contract ID")
+		assert.Contains(t, body, "Registered contracts", "the page comes back without scripting")
+		assert.Contains(t, body, `value="not-a-contract"`, "the typed ID is kept for correction")
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		headers := map[string]string{"Origin": h.server.URL}
+		resp, body := h.postForm(t, "/contracts", url.Values{"contract_id": {idB}}, headers)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+		assert.Contains(t, body, "No contract with that ID")
+	})
+}
+
+func TestRegisterFormHtmx(t *testing.T) {
+	t.Parallel()
+
+	t.Run("error swaps the form", func(t *testing.T) {
+		h := newHarness(t)
+		headers := map[string]string{"Origin": h.server.URL, "HX-Request": "true"}
+
+		resp, body := h.postForm(t, "/contracts", url.Values{"contract_id": {"nope"}}, headers)
+		assert.Equal(t, http.StatusOK, resp.StatusCode, "htmx only swaps successful responses")
+		assert.Contains(t, body, `id="register-form"`)
+		assert.Contains(t, body, "not a valid contract ID")
+		assert.NotContains(t, body, "<html", "the response is a fragment, not a page")
+	})
+
+	t.Run("success redirects through the header", func(t *testing.T) {
+		h := newHarness(t)
+		h.deploy(t, idA)
+		headers := map[string]string{"Origin": h.server.URL, "HX-Request": "true"}
+
+		resp, _ := h.postForm(t, "/contracts", url.Values{"contract_id": {idA}}, headers)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "/contracts/"+idA+"?network=testnet", resp.Header.Get("HX-Redirect"))
+	})
 }
 
 func TestStaticAssets(t *testing.T) {

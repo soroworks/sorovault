@@ -1,0 +1,19 @@
+# Runtime image used by GoReleaser. The build context contains the binaries
+# it already built under $TARGETPLATFORM, so this stage does not compile
+# anything. The SQL migrations are embedded in the binary.
+FROM alpine:3.20
+
+ARG TARGETPLATFORM
+
+# TLS roots, needed to reach an https RPC endpoint.
+RUN apk add --no-cache ca-certificates
+
+COPY $TARGETPLATFORM/sorovault /usr/local/bin/sorovault
+
+RUN adduser -D -u 10001 sorovault
+USER sorovault
+
+EXPOSE 8080
+
+ENTRYPOINT ["sorovault"]
+CMD ["serve"]

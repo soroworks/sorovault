@@ -1,20 +1,25 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/soroworks/sorovault/internal/codegen"
 	"github.com/soroworks/sorovault/internal/config"
 	"github.com/soroworks/sorovault/internal/model"
+	"github.com/soroworks/sorovault/internal/refresher"
 	"github.com/soroworks/sorovault/internal/registry"
 	"github.com/soroworks/sorovault/internal/stellar"
 	"github.com/soroworks/sorovault/internal/store"
@@ -43,7 +48,7 @@ contract has been upgraded since it was last seen.`,
 					cancel()
 
 					if err != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "%s: %v\n", contractID, err)
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s: %v\n", contractID, err)
 						failed++
 						continue
 					}
@@ -69,20 +74,258 @@ contract has been upgraded since it was last seen.`,
 	return cmd
 }
 
-func newRefreshCmd() *cobra.Command {
-	var asJSON bool
+func newRemoveCmd() *cobra.Command {
+	var (
+		network string
+		yes     bool
+	)
 
 	cmd := &cobra.Command{
-		Use:   "refresh <contract_id>...",
+		Use:   "remove <contract_id>",
+		Short: "Delete a contract and all its stored versions",
+		Long: `Delete a contract from the registry, together with every interface
+version stored for it on the selected network.
+
+The API deliberately has no route for this: it is unauthenticated, so
+removal is an operator action available only through the CLI. Without --yes
+the command asks for confirmation before deleting anything.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return withApp(cmd.Context(), func(ctx context.Context, a *app) error {
+				contractID := args[0]
+
+				net := network
+				if net == "" {
+					var err error
+					if net, err = a.registry.Network(ctx); err != nil {
+						return err
+					}
+				}
+
+				if !yes {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Remove %s from %s and all its versions? [y/N] ", contractID, net)
+					if !confirmed(cmd.InOrStdin()) {
+						_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "aborted")
+						return nil
+					}
+				}
+
+				if err := a.registry.Store().Delete(ctx, net, contractID); err != nil {
+					return err
+				}
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "removed %s from %s\n", contractID, net)
+				return nil
+			})
+		},
+	}
+
+	cmd.Flags().StringVar(&network, "network", "", "network to remove from (default: the network RPC_URL serves)")
+	cmd.Flags().BoolVar(&yes, "yes", false, "delete without asking for confirmation")
+	return cmd
+}
+
+// confirmed reads one answer and accepts only an explicit yes.
+func confirmed(r io.Reader) bool {
+	scanner := bufio.NewScanner(r)
+	if !scanner.Scan() {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(scanner.Text())) {
+	case "y", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
+func newExportCmd() *cobra.Command {
+	var output string
+
+	cmd := &cobra.Command{
+		Use:   "export [file]",
+		Short: "Write the registry as versioned JSON",
+		Long: `Write every contract and every stored interface version, with their
+timestamps, as one versioned JSON document. With no file, or with "-", it goes
+to standard output.
+
+The document is portable between databases: "sorovault import" loads it
+without contacting RPC.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 && output != "" {
+				return fmt.Errorf("give either a file argument or --output, not both")
+			}
+			path := output
+			if len(args) == 1 {
+				path = args[0]
+			}
+
+			return withStore(cmd.Context(), func(ctx context.Context, s store.Store) error {
+				snapshot, err := s.Export(ctx)
+				if err != nil {
+					return err
+				}
+
+				if path == "" || path == "-" {
+					return writeJSON(cmd.OutOrStdout(), snapshot)
+				}
+
+				file, err := os.Create(path) //nolint:gosec // the path is the operator's --output argument
+				if err != nil {
+					return fmt.Errorf("creating %s: %w", path, err)
+				}
+				if err := writeJSON(file, snapshot); err != nil {
+					_ = file.Close()
+					return fmt.Errorf("writing %s: %w", path, err)
+				}
+				if err := file.Close(); err != nil {
+					return fmt.Errorf("writing %s: %w", path, err)
+				}
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "wrote %s (%d contract(s))\n", path, len(snapshot.Contracts))
+				return nil
+			})
+		},
+	}
+
+	cmd.Flags().StringVarP(&output, "output", "o", "", "write to this file instead of stdout")
+	return cmd
+}
+
+func newImportCmd() *cobra.Command {
+	var (
+		input string
+		merge bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "import [file]",
+		Short: "Load a registry exported as JSON",
+		Long: `Load a document written by "sorovault export" into the registry.
+
+Without --merge the registry must be empty; the import then reproduces every
+contract, interface version and timestamp exactly. With --merge only the
+contracts and versions that are missing are added, and records already in the
+database are left alone.
+
+Import reads the document directly into the store. It never contacts RPC, so
+it works when the network is unavailable.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 && input != "" {
+				return fmt.Errorf("give either a file argument or --input, not both")
+			}
+			path := input
+			if len(args) == 1 {
+				path = args[0]
+			}
+
+			var data []byte
+			var err error
+			if path == "" || path == "-" {
+				data, err = io.ReadAll(cmd.InOrStdin())
+			} else {
+				data, err = os.ReadFile(path) //nolint:gosec // the path is the operator's --input argument
+			}
+			if err != nil {
+				return fmt.Errorf("reading snapshot: %w", err)
+			}
+
+			var snapshot store.Snapshot
+			if err := json.Unmarshal(data, &snapshot); err != nil {
+				return fmt.Errorf("reading snapshot: %w", err)
+			}
+
+			return withStore(cmd.Context(), func(ctx context.Context, s store.Store) error {
+				if err := s.Import(ctx, &snapshot, merge); err != nil {
+					return err
+				}
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "imported %d contract(s)\n", len(snapshot.Contracts))
+				return nil
+			})
+		},
+	}
+
+	cmd.Flags().StringVarP(&input, "input", "i", "", "read from this file instead of stdin")
+	cmd.Flags().BoolVar(&merge, "merge", false, "add only what is missing instead of requiring an empty registry")
+	return cmd
+}
+
+// printSweepSummary writes one line describing a refresh sweep.
+func printSweepSummary(w io.Writer, sum refresher.Summary) {
+	_, _ = fmt.Fprintf(w, "checked %d, changed %d, missing %d, failed %d, busy %d\n",
+		sum.Checked, sum.Changed, sum.Missing, sum.Failed, sum.Busy)
+}
+
+func newRefreshCmd() *cobra.Command {
+	var (
+		asJSON bool
+		all    bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "refresh [contract_id]...",
 		Short: "Re-check registered contracts for an upgraded interface",
 		Long: `Compare each registered contract against the network and record a new
 interface version if its WASM has changed.
 
+With --all it runs one sweep over every contract on the network, regardless
+of how recently each was refreshed, then exits. It is meant for a cron job or
+for catching up after an RPC outage; it does not wait an interval.
+
 Unlike "add", refresh starts from what is already stored, so an unchanged
 contract costs a single RPC round trip: the module is only downloaded once
 its hash is known to differ.`,
-		Args: cobra.MinimumNArgs(1),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if all {
+				if len(args) > 0 {
+					return fmt.Errorf("--all refreshes every contract and cannot be combined with contract IDs")
+				}
+				return nil
+			}
+			if len(args) == 0 {
+				return fmt.Errorf("at least one contract ID is required, or use --all")
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if all {
+				return withApp(cmd.Context(), func(ctx context.Context, a *app) error {
+					interval := a.cfg.RefreshInterval
+					if interval <= 0 {
+						// SweepAll ignores staleness and pacing; the interval
+						// only satisfies New's positive-duration guard.
+						interval = time.Minute
+					}
+
+					r, err := refresher.New(a.registry, refresher.Options{
+						Interval: interval,
+						Timeout:  a.cfg.RPCTimeout,
+						Logger:   a.log.With("component", "refresher"),
+					})
+					if err != nil {
+						return err
+					}
+
+					summary, err := r.SweepAll(ctx)
+					if err != nil {
+						return err
+					}
+
+					if asJSON {
+						if err := writeJSON(cmd.OutOrStdout(), summary); err != nil {
+							return err
+						}
+					} else {
+						printSweepSummary(cmd.OutOrStdout(), summary)
+					}
+
+					if summary.Failed > 0 {
+						return fmt.Errorf("%w: %d contract(s) failed to refresh", errPrinted, summary.Failed)
+					}
+					return nil
+				})
+			}
+
 			return withApp(cmd.Context(), func(ctx context.Context, a *app) error {
 				var failed int
 
@@ -92,7 +335,7 @@ its hash is known to differ.`,
 					cancel()
 
 					if err != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "%s: %v\n", contractID, err)
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s: %v\n", contractID, err)
 						failed++
 						continue
 					}
@@ -105,11 +348,16 @@ its hash is known to differ.`,
 					}
 
 					if result.Changed {
-						fmt.Fprintf(cmd.OutOrStdout(), "%s upgraded to %s\n",
+						_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s upgraded to %s\n",
 							result.Contract.ContractID, result.Contract.CurrentWasmHash)
 						continue
 					}
-					fmt.Fprintf(cmd.OutOrStdout(), "%s unchanged\n", result.Contract.ContractID)
+					if result.Missing {
+						_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s missing from the network\n",
+							result.Contract.ContractID)
+						continue
+					}
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s unchanged\n", result.Contract.ContractID)
 				}
 
 				if failed > 0 {
@@ -121,16 +369,20 @@ its hash is known to differ.`,
 	}
 
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the full result as JSON")
+	cmd.Flags().BoolVar(&all, "all", false, "run one sweep over every contract on the network")
+	registerContractIDCompletion(cmd, "all")
 	return cmd
 }
 
 func newListCmd() *cobra.Command {
 	var (
-		query   string
-		network string
-		limit   int
-		offset  int
-		asJSON  bool
+		query     string
+		network   string
+		functions []string
+		types     []string
+		limit     int
+		offset    int
+		asJSON    bool
 	)
 
 	cmd := &cobra.Command{
@@ -140,10 +392,12 @@ func newListCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withApp(cmd.Context(), func(ctx context.Context, a *app) error {
 				filter := store.ListFilter{
-					Query:   query,
-					Network: network,
-					Limit:   limit,
-					Offset:  offset,
+					Query:     query,
+					Network:   network,
+					Functions: functions,
+					Types:     types,
+					Limit:     limit,
+					Offset:    offset,
 				}
 
 				page, err := a.registry.Store().ListContracts(ctx, filter)
@@ -156,23 +410,27 @@ func newListCmd() *cobra.Command {
 				}
 
 				if len(page.Contracts) == 0 {
-					fmt.Fprintln(cmd.ErrOrStderr(), "no contracts registered")
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "no contracts registered")
 					return nil
 				}
 
 				tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-				fmt.Fprintln(tw, "CONTRACT ID\tNETWORK\tWASM HASH\tLAST REFRESHED\tMATCHES")
+				_, _ = fmt.Fprintln(tw, "CONTRACT ID\tNETWORK\tWASM HASH\tLAST REFRESHED\tMATCHES\tSTATUS")
 				for _, c := range page.Contracts {
-					fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+					status := ""
+					if c.MissingSince != nil {
+						status = "missing"
+					}
+					_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
 						c.ContractID, c.Network, truncate(c.CurrentWasmHash, 12),
 						c.LastRefreshed.UTC().Format("2006-01-02 15:04"),
-						strings.Join(c.Matches, ","))
+						strings.Join(c.Matches, ","), status)
 				}
 				if err := tw.Flush(); err != nil {
 					return err
 				}
 
-				fmt.Fprintf(cmd.ErrOrStderr(), "\n%d of %d contract(s)\n", len(page.Contracts), page.Total)
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "\n%d of %d contract(s)\n", len(page.Contracts), page.Total)
 				return nil
 			})
 		},
@@ -180,6 +438,8 @@ func newListCmd() *cobra.Command {
 
 	cmd.Flags().StringVarP(&query, "query", "q", "", "search contract ID, name, and function, type and event names")
 	cmd.Flags().StringVar(&network, "network", "", "restrict to one network")
+	cmd.Flags().StringArrayVar(&functions, "function", nil, "only contracts with a function of exactly this name (repeatable)")
+	cmd.Flags().StringArrayVar(&types, "type", nil, "only contracts with a user-defined type of exactly this name (repeatable)")
 	cmd.Flags().IntVar(&limit, "limit", store.DefaultLimit, "maximum rows to return")
 	cmd.Flags().IntVar(&offset, "offset", 0, "rows to skip")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit results as JSON")
@@ -244,15 +504,69 @@ can be piped straight into other tooling.`,
 	cmd.Flags().StringVar(&wasmHash, "wasm-hash", "", "show a specific version instead of the current one")
 	cmd.Flags().StringVar(&function, "function", "", "show only this function")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the ABI as JSON")
+	registerContractIDCompletion(cmd)
+	registerNetworkCompletion(cmd)
+	return cmd
+}
+
+func newVersionsCmd() *cobra.Command {
+	var (
+		network string
+		asJSON  bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "versions <contract_id>",
+		Short: "List a contract's stored interface versions",
+		Long: `Print every interface SoroVault has stored for a contract, newest first.
+
+The current version is the one the contract runs now; an older one can be
+read with "get --wasm-hash".`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return withApp(cmd.Context(), func(ctx context.Context, a *app) error {
+				net := network
+				if net == "" {
+					var err error
+					if net, err = a.registry.Network(ctx); err != nil {
+						return err
+					}
+				}
+
+				versions, err := a.registry.Store().ListVersions(ctx, net, args[0])
+				if err != nil {
+					return err
+				}
+
+				if asJSON {
+					return writeJSON(cmd.OutOrStdout(), versionsDocument{
+						ContractID: args[0],
+						Network:    net,
+						Versions:   versions,
+					})
+				}
+				printVersions(cmd.OutOrStdout(), versions)
+				return nil
+			})
+		},
+	}
+
+	cmd.Flags().StringVar(&network, "network", "", "network to read from (default: the network RPC_URL serves)")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the versions as JSON")
+	registerContractIDCompletion(cmd)
+	registerNetworkCompletion(cmd)
 	return cmd
 }
 
 func newCodegenCmd() *cobra.Command {
 	var (
-		network  string
-		wasmHash string
-		lang     string
-		output   string
+		network     string
+		wasmHash    string
+		lang        string
+		output      string
+		asPackage   bool
+		packageName string
+		pkgVersion  string
 	)
 
 	cmd := &cobra.Command{
@@ -263,12 +577,31 @@ func newCodegenCmd() *cobra.Command {
 The client is generated from what SoroVault already holds, so no network
 access is needed. --wasm-hash generates against a superseded version.
 
-Supported formats are TypeScript (ts) and Markdown (md).`,
+Supported formats are TypeScript (ts), Markdown (md) and example argument
+lists (examples): one example argument object per function, keyed by
+function name. With --package the output is a complete npm package: the
+client under src/, a package.json that pins @stellar/stellar-sdk and buffer
+as peer dependencies, a tsconfig.json and a README, ready to publish or
+install from a tarball.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if lang != "ts" && lang != "typescript" && lang != "md" && lang != "markdown" {
-				return fmt.Errorf("unsupported --lang %q (supported: ts, md)", lang)
+			if lang != "ts" && lang != "typescript" && lang != "md" && lang != "markdown" && lang != "examples" {
+				return fmt.Errorf("unsupported --lang %q (supported: ts, md, examples)", lang)
 			}
+			if asPackage {
+				if lang == "md" || lang == "markdown" {
+					return fmt.Errorf("--package writes a TypeScript package, so --lang md cannot be packaged")
+				}
+				if lang == "examples" {
+					return fmt.Errorf("--package writes a TypeScript package, so --lang examples cannot be packaged")
+				}
+				if strings.TrimSpace(packageName) == "" {
+					return fmt.Errorf("--package needs --name: the npm package name to publish")
+				}
+			} else if pkgVersion != "" {
+				return fmt.Errorf("--package-version only applies to --package")
+			}
+
 			return withApp(cmd.Context(), func(ctx context.Context, a *app) error {
 				net := network
 				if net == "" {
@@ -288,10 +621,42 @@ Supported formats are TypeScript (ts) and Markdown (md).`,
 					Network:    stored.Network,
 					WasmHash:   stored.WasmHash,
 				}
+
+				if asPackage {
+					files, err := codegen.Package(stored.Interface, src, codegen.PackageOptions{
+						Name:    packageName,
+						Version: pkgVersion,
+					})
+					if err != nil {
+						return err
+					}
+
+					dir := output
+					if dir == "" || dir == "-" {
+						dir = packageDirName(packageName)
+					}
+					for _, file := range files {
+						path := filepath.Join(dir, filepath.FromSlash(file.Path))
+						if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+							return err
+						}
+						if err := os.WriteFile(path, file.Data, 0o600); err != nil {
+							return err
+						}
+					}
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "wrote %s (%d files)\n", dir, len(files))
+					return nil
+				}
+
 				var source string
-				if lang == "md" || lang == "markdown" {
+				switch lang {
+				case "md", "markdown":
 					source, err = codegen.Markdown(stored.Interface, src)
-				} else {
+				case "examples":
+					var body []byte
+					body, err = codegen.Examples(stored.Interface, src)
+					source = string(body)
+				default:
 					source, err = codegen.TypeScript(stored.Interface, src)
 				}
 				if err != nil {
@@ -302,10 +667,10 @@ Supported formats are TypeScript (ts) and Markdown (md).`,
 					_, err = io.WriteString(cmd.OutOrStdout(), source)
 					return err
 				}
-				if err := os.WriteFile(output, []byte(source), 0o644); err != nil {
+				if err := os.WriteFile(output, []byte(source), 0o600); err != nil {
 					return err
 				}
-				fmt.Fprintf(cmd.ErrOrStderr(), "wrote %s\n", output)
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "wrote %s\n", output)
 				return nil
 			})
 		},
@@ -313,16 +678,35 @@ Supported formats are TypeScript (ts) and Markdown (md).`,
 
 	cmd.Flags().StringVar(&network, "network", "", "network to read from (default: the network RPC_URL serves)")
 	cmd.Flags().StringVar(&wasmHash, "wasm-hash", "", "generate for a specific version instead of the current one")
-	cmd.Flags().StringVar(&lang, "lang", "ts", "output format (ts or md)")
-	cmd.Flags().StringVarP(&output, "output", "o", "", "write to this file instead of stdout")
+	cmd.Flags().StringVar(&lang, "lang", "ts", "output format (ts, md or examples)")
+	cmd.Flags().StringVarP(&output, "output", "o", "", "write to this file, or this directory with --package")
+	cmd.Flags().BoolVar(&asPackage, "package", false, "write a complete npm package instead of one file")
+	cmd.Flags().StringVar(&packageName, "name", "", "npm package name for --package (@scope/name)")
+	cmd.Flags().StringVar(&pkgVersion, "package-version", "", "version for --package (default: derived from the WASM hash)")
+	registerContractIDCompletion(cmd)
+	registerNetworkCompletion(cmd)
 	return cmd
+}
+
+// packageDirName is the directory --package writes to when --output is not
+// given. A scope is part of the package name, not a directory to create, so
+// @acme/zkvote becomes zkvote.
+func packageDirName(name string) string {
+	if _, base, ok := strings.Cut(name, "/"); ok {
+		return base
+	}
+	return name
 }
 
 func newMigrateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "migrate",
 		Short: "Apply pending database migrations",
-		Args:  cobra.NoArgs,
+		Long: `Apply pending database migrations.
+
+Run "sorovault migrate status" to see what is applied and what is pending
+without applying anything.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			databaseURL, err := requireDatabaseURL()
 			if err != nil {
@@ -341,11 +725,230 @@ func newMigrateCmd() *cobra.Command {
 				return fmt.Errorf("database is at version %d but marked dirty; a previous migration failed partway and needs manual repair", version)
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "database is at migration version %d\n", version)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "database is at migration version %d\n", version)
 			return nil
 		},
 	}
+
+	cmd.AddCommand(newMigrateStatusCmd(migrateStatusDepsFromEnv))
 	return cmd
+}
+
+// migrateStatusDeps are the things a migration status run talks to. They are
+// injected so the command can be exercised without a database.
+type migrateStatusDeps struct {
+	// Version reports the migration version the database has applied, and
+	// whether the database is marked dirty.
+	Version func(ctx context.Context) (version uint, dirty bool, err error)
+	// Migrations lists the migrations embedded in the binary, oldest first.
+	Migrations func(ctx context.Context) ([]store.Migration, error)
+}
+
+// migrateStatusDepsFromEnv builds the status command's dependencies from the
+// environment.
+func migrateStatusDepsFromEnv() (migrateStatusDeps, error) {
+	databaseURL, err := requireDatabaseURL()
+	if err != nil {
+		return migrateStatusDeps{}, err
+	}
+
+	return migrateStatusDeps{
+		// golang-migrate is the same source of truth the migrate command
+		// applies, so the two cannot disagree about where the database is.
+		// Opening a database through it creates the version table if the
+		// database has none, which is the one thing a status run may write.
+		Version: func(context.Context) (uint, bool, error) {
+			return store.MigrationVersion(databaseURL)
+		},
+		Migrations: func(context.Context) ([]store.Migration, error) {
+			return store.EmbeddedMigrations()
+		},
+	}, nil
+}
+
+// migrateStatusReport is what a status run found, in the form the --json
+// flag emits.
+type migrateStatusReport struct {
+	// Current is the migration version the database has applied.
+	Current uint `json:"current_version"`
+	// Latest is the highest migration version embedded in this binary.
+	Latest uint `json:"latest_version"`
+	// Dirty says whether the database is marked dirty.
+	Dirty bool `json:"dirty"`
+	// Pending lists the migrations the database has not applied, oldest
+	// first. It is empty rather than null when there are none.
+	Pending []migrationStatusItem `json:"pending"`
+	// Message says what the report means and what to do about it, so a
+	// reader of the JSON is told what a reader of the text report is.
+	Message string `json:"message"`
+}
+
+// migrationStatusItem is one migration in a status report.
+type migrationStatusItem struct {
+	// Version is the migration's version number.
+	Version uint `json:"version"`
+	// Name is the migration's name.
+	Name string `json:"name"`
+}
+
+// The wording of the report. The text form and the JSON form both come
+// from here, so they cannot describe the same state differently.
+const (
+	// dirtyState says what a dirty database means.
+	dirtyState = "the database is marked dirty: a migration failed partway and the schema is in an unknown state"
+	// dirtyAdvice says what to do about a dirty database.
+	dirtyAdvice = "the pending migrations cannot be applied until the schema is repaired: " +
+		"fix the schema by hand, then set the version with the golang-migrate CLI " +
+		"(`migrate -path migrations -database \"$DATABASE_URL\" force <version>`) before applying migrations again"
+	// upToDate says the database has every migration this binary carries.
+	upToDate = "the database is up to date"
+)
+
+// statusMessage summarises the report in one line: what state the database
+// is in, and what to do about it.
+//
+// The text report says the same in more than one line where a terminal
+// reads better.
+func statusMessage(report migrateStatusReport) string {
+	switch {
+	case report.Dirty:
+		return dirtyState + "; " + dirtyAdvice
+
+	case len(report.Pending) > 0:
+		return fmt.Sprintf("%d migration(s) pending; run `sorovault migrate` to apply them", len(report.Pending))
+
+	case report.Current > report.Latest:
+		return fmt.Sprintf("the database is at version %d, ahead of the migrations in this binary (version %d)",
+			report.Current, report.Latest)
+
+	default:
+		return upToDate
+	}
+}
+
+// newMigrateStatusCmd builds the "migrate status" command. Its dependencies
+// are injected so it can be exercised without a database.
+func newMigrateStatusCmd(depsFor func() (migrateStatusDeps, error)) *cobra.Command {
+	var asJSON bool
+
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show which migrations are applied and which are pending",
+		Long: `Report the migration version the database has applied, the latest
+version embedded in this binary, and the migrations that have not been
+applied yet.
+
+No migration is applied: a status run reports and stops there.
+
+The command exits non-zero when migrations are pending, so it can gate a
+deployment.`,
+		Args: cobra.NoArgs,
+		// The report already says what is wrong, so the error only carries
+		// the summary, and main prints that rather than cobra printing it
+		// a second time.
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			deps, err := depsFor()
+			if err != nil {
+				return err
+			}
+			return reportMigrationStatus(cmd.Context(), cmd.OutOrStdout(), deps, asJSON)
+		},
+	}
+
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the report as JSON")
+	return cmd
+}
+
+// reportMigrationStatus works out where the database is, writes the report,
+// and fails when the database is not in a state a deployment can start from.
+func reportMigrationStatus(ctx context.Context, w io.Writer, deps migrateStatusDeps, asJSON bool) error {
+	current, dirty, err := deps.Version(ctx)
+	if err != nil {
+		return err
+	}
+
+	migrations, err := deps.Migrations(ctx)
+	if err != nil {
+		return err
+	}
+	if len(migrations) == 0 {
+		// A binary that embeds no migrations cannot say whether a database
+		// is up to date, and saying "up to date" would be a lie.
+		return errors.New("this binary embeds no migrations")
+	}
+
+	report := migrateStatusReport{
+		Current: current,
+		Dirty:   dirty,
+		Pending: []migrationStatusItem{},
+	}
+	for _, m := range migrations {
+		if m.Version > report.Latest {
+			report.Latest = m.Version
+		}
+		if m.Version > current {
+			report.Pending = append(report.Pending, migrationStatusItem{
+				Version: m.Version,
+				Name:    m.Name,
+			})
+		}
+	}
+	report.Message = statusMessage(report)
+
+	if asJSON {
+		if err := writeJSON(w, report); err != nil {
+			return err
+		}
+	} else if err := writeMigrationStatus(w, report); err != nil {
+		return err
+	}
+
+	switch {
+	case report.Dirty:
+		// A dirty database is the more urgent problem: the schema is in
+		// an unknown state, so the pending list cannot be trusted either.
+		return errors.New("the database is marked dirty and needs manual repair")
+
+	case len(report.Pending) > 0:
+		return errors.New(report.Message)
+
+	default:
+		// Nothing is pending, whether the database is at the latest version
+		// or ahead of it; the report says which of the two it is.
+		return nil
+	}
+}
+
+// writeMigrationStatus writes the human-readable report.
+func writeMigrationStatus(w io.Writer, report migrateStatusReport) error {
+	_, _ = fmt.Fprintf(w, "current version: %d\n", report.Current)
+	_, _ = fmt.Fprintf(w, "latest version:  %d\n", report.Latest)
+
+	switch {
+	case report.Dirty:
+		_, _ = fmt.Fprintf(w, "\n%s\n", dirtyState)
+		_, _ = fmt.Fprintf(w, "%s\n", dirtyAdvice)
+		return nil
+
+	case len(report.Pending) > 0:
+		_, _ = fmt.Fprintf(w, "\npending migrations:\n")
+		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "  VERSION\tNAME")
+		for _, m := range report.Pending {
+			_, _ = fmt.Fprintf(tw, "  %d\t%s\n", m.Version, m.Name)
+		}
+		return tw.Flush()
+
+	case report.Current > report.Latest:
+		_, _ = fmt.Fprintf(w, "\n%s\n", report.Message)
+		return nil
+
+	default:
+		_, _ = fmt.Fprintf(w, "\n%s\n", upToDate)
+		return nil
+	}
 }
 
 // doctorCheck is one thing a doctor run checks.
@@ -571,7 +1174,7 @@ func printDoctor(w io.Writer, report doctorReport) {
 		if !c.OK {
 			status, detail = "FAIL", c.Error
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", status, c.Name, detail)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", status, c.Name, detail)
 	}
 	_ = tw.Flush()
 }
@@ -580,95 +1183,127 @@ func printDoctor(w io.Writer, report doctorReport) {
 func printRegisterResult(w io.Writer, r *registry.Result) {
 	verb := "already current"
 	switch {
+	case r.Missing:
+		verb = "missing from the network"
 	case r.Created:
 		verb = "registered"
 	case r.Changed:
 		verb = "upgraded"
 	}
 
-	fmt.Fprintf(w, "%s %s on %s\n", r.Contract.ContractID, verb, r.Contract.Network)
-	fmt.Fprintf(w, "  wasm hash  %s\n", r.Contract.CurrentWasmHash)
+	_, _ = fmt.Fprintf(w, "%s %s on %s\n", r.Contract.ContractID, verb, r.Contract.Network)
+	_, _ = fmt.Fprintf(w, "  wasm hash  %s\n", r.Contract.CurrentWasmHash)
 
 	if r.Interface != nil {
-		fmt.Fprintf(w, "  functions  %d\n", len(r.Interface.Functions))
+		_, _ = fmt.Fprintf(w, "  functions  %d\n", len(r.Interface.Functions))
 		if n := len(r.Interface.Types.Structs) + len(r.Interface.Types.Unions) +
 			len(r.Interface.Types.Enums) + len(r.Interface.Types.ErrorEnums); n > 0 {
-			fmt.Fprintf(w, "  types      %d\n", n)
+			_, _ = fmt.Fprintf(w, "  types      %d\n", n)
 		}
 		if n := len(r.Interface.Events); n > 0 {
-			fmt.Fprintf(w, "  events     %d\n", n)
+			_, _ = fmt.Fprintf(w, "  events     %d\n", n)
 		}
 	}
 }
 
 // printInterface writes a contract's interface as readable signatures.
 func printInterface(w io.Writer, s *store.Spec) {
-	fmt.Fprintf(w, "%s  (%s)\n", s.ContractID, s.Network)
-	fmt.Fprintf(w, "wasm %s\n\n", s.WasmHash)
+	_, _ = fmt.Fprintf(w, "%s  (%s)\n", s.ContractID, s.Network)
+	_, _ = fmt.Fprintf(w, "wasm %s\n\n", s.WasmHash)
 
 	if len(s.Interface.Functions) == 0 {
-		fmt.Fprintln(w, "no functions")
+		_, _ = fmt.Fprintln(w, "no functions")
 	}
 	for _, fn := range s.Interface.Functions {
-		fmt.Fprintf(w, "  %s\n", fn.Signature())
+		_, _ = fmt.Fprintf(w, "  %s\n", fn.Signature())
 	}
 
 	t := s.Interface.Types
 	if n := len(t.Structs) + len(t.Unions) + len(t.Enums) + len(t.ErrorEnums); n > 0 {
-		fmt.Fprintln(w, "\ntypes:")
+		_, _ = fmt.Fprintln(w, "\ntypes:")
 		for _, x := range t.Structs {
-			fmt.Fprintf(w, "  struct %s (%d fields)\n", x.Name, len(x.Fields))
+			_, _ = fmt.Fprintf(w, "  struct %s (%d fields)\n", x.Name, len(x.Fields))
 		}
 		for _, x := range t.Unions {
-			fmt.Fprintf(w, "  enum   %s (%d cases)\n", x.Name, len(x.Cases))
+			_, _ = fmt.Fprintf(w, "  enum   %s (%d cases)\n", x.Name, len(x.Cases))
 		}
 		for _, x := range t.Enums {
-			fmt.Fprintf(w, "  enum   %s (%d cases, u32)\n", x.Name, len(x.Cases))
+			_, _ = fmt.Fprintf(w, "  enum   %s (%d cases, u32)\n", x.Name, len(x.Cases))
 		}
 		for _, x := range t.ErrorEnums {
-			fmt.Fprintf(w, "  error  %s (%d cases)\n", x.Name, len(x.Cases))
+			_, _ = fmt.Fprintf(w, "  error  %s (%d cases)\n", x.Name, len(x.Cases))
 		}
 	}
 
 	if len(s.Interface.Events) > 0 {
-		fmt.Fprintln(w, "\nevents:")
+		_, _ = fmt.Fprintln(w, "\nevents:")
 		for _, e := range s.Interface.Events {
-			fmt.Fprintf(w, "  %s (%d params)\n", e.Name, len(e.Params))
+			_, _ = fmt.Fprintf(w, "  %s (%d params)\n", e.Name, len(e.Params))
 		}
 	}
+}
+
+// versionsDocument is the JSON shape of the versions command. It matches
+// what GET /api/contracts/{id}/versions serves, so the two are
+// interchangeable in a pipeline.
+type versionsDocument struct {
+	ContractID string              `json:"contract_id"`
+	Network    string              `json:"network"`
+	Versions   []store.SpecVersion `json:"versions"`
+}
+
+// printVersions writes one row per stored interface, newest first.
+func printVersions(w io.Writer, versions []store.SpecVersion) {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "WASM HASH\tDECODED\tCURRENT")
+	for _, v := range versions {
+		current := ""
+		if v.Current {
+			current = "yes"
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n",
+			v.WasmHash, v.DecodedAt.UTC().Format("2006-01-02 15:04"), current)
+	}
+	_ = tw.Flush()
 }
 
 // printFunction writes one function's signature in detail.
 func printFunction(w io.Writer, fn model.Function) {
-	fmt.Fprintf(w, "%s\n", fn.Signature())
+	_, _ = fmt.Fprintf(w, "%s\n", fn.Signature())
 
 	if fn.Doc != "" {
 		for _, line := range strings.Split(strings.TrimRight(fn.Doc, "\n"), "\n") {
-			fmt.Fprintf(w, "  // %s\n", line)
+			_, _ = fmt.Fprintf(w, "  // %s\n", line)
 		}
 	}
 
 	if len(fn.Inputs) > 0 {
-		fmt.Fprintln(w, "\ninputs:")
+		_, _ = fmt.Fprintln(w, "\ninputs:")
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 		for _, in := range fn.Inputs {
-			fmt.Fprintf(tw, "  %s\t%s\n", in.Name, in.Type.Display)
+			_, _ = fmt.Fprintf(tw, "  %s\t%s\n", in.Name, in.Type.Display)
 		}
 		_ = tw.Flush()
 	}
 
-	fmt.Fprint(w, "\nreturns: ")
+	_, _ = fmt.Fprint(w, "\nreturns: ")
 	if len(fn.Outputs) == 0 {
-		fmt.Fprintln(w, "()")
+		_, _ = fmt.Fprintln(w, "()")
 		return
 	}
-	fmt.Fprintln(w, fn.Outputs[0].Display)
+	_, _ = fmt.Fprintln(w, fn.Outputs[0].Display)
 }
 
 // writeJSON emits an indented JSON document followed by a newline.
+//
+// HTML escaping is off: this JSON is read by other programs, not embedded
+// in a page, and escaping would turn a placeholder like <version> into
+// \u003cversion\u003e, which is harder to read in a terminal and no safer
+// once parsed.
 func writeJSON(w io.Writer, v any) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false)
 	return enc.Encode(v)
 }
 

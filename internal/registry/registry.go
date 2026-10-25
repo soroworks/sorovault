@@ -148,6 +148,13 @@ type Result struct {
 	// Changed is true when the contract's WASM hash differed from what was
 	// stored, so a new interface version was recorded.
 	Changed bool `json:"changed"`
+	// PreviousWasmHash is the hash the contract ran before, when this call
+	// changed it. It is empty when nothing changed.
+	PreviousWasmHash string `json:"previous_wasm_hash,omitempty"`
+	// Missing is true when the contract could not be found on the network.
+	// The call succeeded — the contract's record is kept, and marked as
+	// missing — so this is not an error.
+	Missing bool `json:"missing,omitempty"`
 }
 
 // WasmResult describes a catalogued upload that may not be deployed yet.
@@ -186,6 +193,20 @@ func (r *Registry) Network(ctx context.Context) (string, error) {
 
 	r.network = stellar.NetworkName(passphrase)
 	return r.network, nil
+}
+
+// CheckNetwork asks the endpoint for its passphrase and verifies it against
+// the configured one, without using the cached network label.
+//
+// Readiness uses it so an endpoint that becomes unreachable after startup is
+// noticed; Network deliberately caches a successful answer forever, since a
+// resolved network does not change.
+func (r *Registry) CheckNetwork(ctx context.Context) error {
+	passphrase, err := r.fetcher.Network(ctx)
+	if err != nil {
+		return err
+	}
+	return CheckPassphrase(passphrase, r.expectPassphrase)
 }
 
 // CheckPassphrase reports whether the passphrase an endpoint reports is the
@@ -287,6 +308,9 @@ func (r *Registry) Register(ctx context.Context, contractID string) (*Result, er
 		Created:   existing == nil,
 		Changed:   existing == nil || existing.CurrentWasmHash != contract.WasmHash,
 	}
+	if result.Changed && existing != nil {
+		result.PreviousWasmHash = existing.CurrentWasmHash
+	}
 
 	r.log.InfoContext(ctx, "registered contract",
 		"contract_id", contractID,
@@ -354,6 +378,9 @@ func (r *Registry) CatalogWasm(ctx context.Context, wasmHash string) (*WasmResul
 // Unlike Register it starts from what is already stored, so it can settle an
 // unchanged contract with a single RPC round trip: the module is only
 // downloaded once the hash is known to differ.
+//
+// A contract that is no longer on the network is not an error: it is marked
+// missing, and the result says so.
 func (r *Registry) Refresh(ctx context.Context, contractID string) (*Result, error) {
 	if err := stellar.ValidateContractID(contractID); err != nil {
 		return nil, err
@@ -379,13 +406,16 @@ func (r *Registry) Refresh(ctx context.Context, contractID string) (*Result, err
 
 	currentHash, err := r.fetcher.WasmHash(ctx, contractID)
 	if err != nil {
+		if errors.Is(err, stellar.ErrContractNotFound) {
+			return r.markMissing(ctx, network, existing)
+		}
 		return nil, err
 	}
 
 	if currentHash == existing.CurrentWasmHash {
 		// Nothing new to decode, but the contract was just confirmed live,
 		// so re-save to advance last_refreshed. Save is a no-op on the spec
-		// row when the hash is unchanged.
+		// row when the hash is unchanged, and clears any missing mark.
 		stored, err := r.store.GetSpec(ctx, network, contractID, currentHash)
 		if err != nil {
 			return nil, err
@@ -406,6 +436,9 @@ func (r *Registry) Refresh(ctx context.Context, contractID string) (*Result, err
 
 	contract, err := r.fetcher.FetchContract(ctx, contractID)
 	if err != nil {
+		if errors.Is(err, stellar.ErrContractNotFound) {
+			return r.markMissing(ctx, network, existing)
+		}
 		return nil, err
 	}
 
@@ -432,7 +465,36 @@ func (r *Registry) Refresh(ctx context.Context, contractID string) (*Result, err
 		"to_wasm_hash", contract.WasmHash,
 	)
 
-	return &Result{Contract: *updated, Interface: iface, Changed: true}, nil
+	return &Result{
+		Contract:         *updated,
+		Interface:        iface,
+		Changed:          true,
+		PreviousWasmHash: existing.CurrentWasmHash,
+	}, nil
+}
+
+// markMissing records that a contract has gone from the network.
+//
+// The contract's record is kept: its last interface is still the best
+// description of what the contract was, and the mark says when it stopped
+// being live. Only a contract that is genuinely absent is marked — an RPC
+// failure says nothing about the contract.
+func (r *Registry) markMissing(ctx context.Context, network string, existing *store.Contract) (*Result, error) {
+	if err := r.store.MarkMissing(ctx, network, existing.ContractID, time.Now().UTC()); err != nil {
+		return nil, err
+	}
+	updated, err := r.store.GetContract(ctx, network, existing.ContractID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Debug, not a warning: the sweep reports a contract that has just
+	// gone missing, and repeating that on every sweep would drown it.
+	r.log.DebugContext(ctx, "contract not found on the network",
+		"contract_id", existing.ContractID, "network", network,
+		"missing_since", updated.MissingSince)
+
+	return &Result{Contract: *updated, Missing: true}, nil
 }
 
 // Store exposes the underlying store for read-only queries the API and UI

@@ -1,0 +1,34 @@
+# golangci-lint configuration. The default ("standard") set is errcheck,
+# govet, ineffassign, staticcheck and unused; the rest are enabled because
+# this service parses untrusted WASM and renders HTML built from it.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    # gosec: the service handles untrusted contract bytes and user-supplied
+    # strings; its taint and unsafe-operation checks are worth the noise.
+    - gosec
+    # bodyclose: HTTP responses from Stellar RPC must always be closed, or a
+    # long-running serve leaks connections.
+    - bodyclose
+    # errorlint: wraps and sentinel comparisons must survive %w and errors.Is;
+    # this catches broken error chains before they hide a real failure.
+    - errorlint
+    # misspell: documentation and user-facing strings are part of the
+    # product, and typos in them are cheap to catch here.
+    - misspell
+    # unconvert: redundant conversions make ABI decoding harder to follow
+    # and can hide accidental precision loss.
+    - unconvert
+
+formatters:
+  enable:
+    - gofmt
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

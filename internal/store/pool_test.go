@@ -15,7 +15,7 @@ import (
 // poolURL names a database that need not exist: parsing a connection string
 // does not touch the network, which is what lets the pool rules be checked
 // without a database.
-const poolURL = "postgres://sorovault:sorovault@localhost:5432/sorovault?sslmode=disable"
+const poolURL = "postgres://sorovault:sorovault@localhost:5432/sorovault?sslmode=disable" //nolint:gosec // a throwaway test URL that is only parsed, never dialled
 
 func TestResolvePoolConfig(t *testing.T) {
 	t.Parallel()
@@ -27,7 +27,7 @@ func TestResolvePoolConfig(t *testing.T) {
 		// pgx defaults the maximum to the greater of 4 or the number of
 		// CPUs, and leaves the minimum at none.
 		want := int32(4)
-		if cpu := int32(runtime.NumCPU()); cpu > want {
+		if cpu := int32(runtime.NumCPU()); cpu > want { //nolint:gosec // a CPU count fits in int32
 			want = cpu
 		}
 		assert.Equal(t, want, cfg.MaxConns)

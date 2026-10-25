@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/soroworks/sorovault/internal/model"
+	"github.com/soroworks/sorovault/internal/spec"
 )
 
 // Postgres is the Store backed by a Postgres database.
@@ -109,6 +111,14 @@ func Ping(ctx context.Context, databaseURL string) error {
 	return nil
 }
 
+// Ping reports whether the database still answers, without changing it.
+func (p *Postgres) Ping(ctx context.Context) error {
+	if err := p.pool.Ping(ctx); err != nil {
+		return fmt.Errorf("store: pinging postgres: %w", err)
+	}
+	return nil
+}
+
 // Close releases the connection pool.
 func (p *Postgres) Close() error {
 	p.pool.Close()
@@ -165,6 +175,7 @@ func (p *Postgres) Save(ctx context.Context, c Contract, iface *model.Interface)
 	if err != nil {
 		return fmt.Errorf("store: encoding interface: %w", err)
 	}
+	c.Implements = spec.ImplementedStandards(iface)
 
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -173,16 +184,19 @@ func (p *Postgres) Save(ctx context.Context, c Contract, iface *model.Interface)
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op once the tx is committed
 
 	// first_seen is preserved across refreshes; everything else tracks the
-	// most recent successful fetch.
+	// most recent successful fetch. Saving an interface means the contract
+	// was live, so a missing mark is cleared.
 	const upsertContract = `
-		INSERT INTO contracts (network, contract_id, current_wasm_hash, name, first_seen, last_refreshed)
-		VALUES ($1, $2, $3, $4, now(), now())
+		INSERT INTO contracts (network, contract_id, current_wasm_hash, name, implements, first_seen, last_refreshed)
+		VALUES ($1, $2, $3, $4, $5, now(), now())
 		ON CONFLICT (network, contract_id) DO UPDATE SET
 			current_wasm_hash = EXCLUDED.current_wasm_hash,
 			name              = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE contracts.name END,
-			last_refreshed    = now()`
+			implements        = EXCLUDED.implements,
+			last_refreshed    = now(),
+			missing_since     = NULL`
 
-	if _, err := tx.Exec(ctx, upsertContract, c.Network, c.ContractID, c.CurrentWasmHash, c.Name); err != nil {
+	if _, err := tx.Exec(ctx, upsertContract, c.Network, c.ContractID, c.CurrentWasmHash, c.Name, c.Implements); err != nil {
 		return fmt.Errorf("store: saving contract %s: %w", c.ContractID, err)
 	}
 
@@ -209,13 +223,14 @@ func (p *Postgres) Save(ctx context.Context, c Contract, iface *model.Interface)
 // GetContract returns one contract's current state.
 func (p *Postgres) GetContract(ctx context.Context, network, contractID string) (*Contract, error) {
 	const q = `
-		SELECT network, contract_id, current_wasm_hash, name, source_url, source_commit, first_seen, last_refreshed
+		SELECT network, contract_id, current_wasm_hash, name, source_url, source_commit, first_seen, last_refreshed, missing_since, implements
 		FROM contracts
 		WHERE network = $1 AND contract_id = $2`
 
 	var c Contract
 	err := p.pool.QueryRow(ctx, q, network, contractID).Scan(
-		&c.Network, &c.ContractID, &c.CurrentWasmHash, &c.Name, &c.SourceURL, &c.SourceCommit, &c.FirstSeen, &c.LastRefreshed,
+		&c.Network, &c.ContractID, &c.CurrentWasmHash, &c.Name, &c.SourceURL, &c.SourceCommit,
+		&c.FirstSeen, &c.LastRefreshed, &c.MissingSince, &c.Implements,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("%w: contract %s on %s", ErrNotFound, contractID, network)
@@ -224,6 +239,26 @@ func (p *Postgres) GetContract(ctx context.Context, network, contractID string) 
 		return nil, fmt.Errorf("store: loading contract %s: %w", contractID, err)
 	}
 	return &c, nil
+}
+
+// MarkMissing records that a contract could not be found on the network.
+//
+// The first sighting is the one that counts: a contract that stays missing
+// keeps the timestamp of when it went away rather than the time it was last
+// looked for.
+func (p *Postgres) MarkMissing(ctx context.Context, network, contractID string, since time.Time) error {
+	const q = `
+		UPDATE contracts SET missing_since = COALESCE(missing_since, $3)
+		WHERE network = $1 AND contract_id = $2`
+
+	tag, err := p.pool.Exec(ctx, q, network, contractID, since.UTC())
+	if err != nil {
+		return fmt.Errorf("store: marking contract %s missing: %w", contractID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: contract %s on %s", ErrNotFound, contractID, network)
+	}
+	return nil
 }
 
 // UpdateSource attaches repository metadata to an existing contract.
@@ -239,6 +274,153 @@ func (p *Postgres) UpdateSource(ctx context.Context, network, contractID, source
 	return nil
 }
 
+// Delete removes a contract and every version stored for it. The specs
+// foreign key cascades, so one statement removes the whole history.
+func (p *Postgres) Delete(ctx context.Context, network, contractID string) error {
+	const q = `DELETE FROM contracts WHERE network = $1 AND contract_id = $2`
+	tag, err := p.pool.Exec(ctx, q, network, contractID)
+	if err != nil {
+		return fmt.Errorf("store: deleting contract %s: %w", contractID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: contract %s on %s", ErrNotFound, contractID, network)
+	}
+	return nil
+}
+
+// Export returns every contract and interface version in a stable order.
+func (p *Postgres) Export(ctx context.Context) (*Snapshot, error) {
+	const contractsQuery = `
+		SELECT network, contract_id, current_wasm_hash, name, source_url, source_commit,
+		       first_seen, last_refreshed, missing_since
+		FROM contracts
+		ORDER BY network, contract_id`
+
+	rows, err := p.pool.Query(ctx, contractsQuery)
+	if err != nil {
+		return nil, fmt.Errorf("store: exporting contracts: %w", err)
+	}
+	defer rows.Close()
+
+	snapshot := &Snapshot{Version: SnapshotVersion, Contracts: []ContractSnapshot{}}
+	index := make(map[string]int)
+	for rows.Next() {
+		var c Contract
+		if err := rows.Scan(
+			&c.Network, &c.ContractID, &c.CurrentWasmHash, &c.Name, &c.SourceURL, &c.SourceCommit,
+			&c.FirstSeen, &c.LastRefreshed, &c.MissingSince,
+		); err != nil {
+			return nil, fmt.Errorf("store: scanning exported contract: %w", err)
+		}
+		index[key(c.Network, c.ContractID)] = len(snapshot.Contracts)
+		snapshot.Contracts = append(snapshot.Contracts, ContractSnapshot{
+			Contract: c,
+			Versions: []SpecSnapshot{},
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: exporting contracts: %w", err)
+	}
+
+	const specsQuery = `
+		SELECT network, contract_id, wasm_hash, spec, decoded_at
+		FROM specs
+		ORDER BY network, contract_id, decoded_at, id`
+	specRows, err := p.pool.Query(ctx, specsQuery)
+	if err != nil {
+		return nil, fmt.Errorf("store: exporting specs: %w", err)
+	}
+	defer specRows.Close()
+
+	for specRows.Next() {
+		var network, contractID, wasmHash string
+		var body []byte
+		var decodedAt time.Time
+		if err := specRows.Scan(&network, &contractID, &wasmHash, &body, &decodedAt); err != nil {
+			return nil, fmt.Errorf("store: scanning exported spec: %w", err)
+		}
+		var iface model.Interface
+		if err := json.Unmarshal(body, &iface); err != nil {
+			return nil, fmt.Errorf("store: decoding exported spec for %s: %w", contractID, err)
+		}
+		i, ok := index[key(network, contractID)]
+		if !ok {
+			continue
+		}
+		snapshot.Contracts[i].Versions = append(snapshot.Contracts[i].Versions, SpecSnapshot{
+			WasmHash:  wasmHash,
+			Interface: &iface,
+			DecodedAt: decodedAt,
+		})
+	}
+	if err := specRows.Err(); err != nil {
+		return nil, fmt.Errorf("store: exporting specs: %w", err)
+	}
+	return snapshot, nil
+}
+
+// Import loads a snapshot in one transaction, preserving every timestamp.
+func (p *Postgres) Import(ctx context.Context, snapshot *Snapshot, merge bool) error {
+	if err := validateSnapshot(snapshot); err != nil {
+		return err
+	}
+
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin import: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op once the tx is committed
+
+	if !merge {
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM contracts)`).Scan(&exists); err != nil {
+			return fmt.Errorf("store: checking registry is empty: %w", err)
+		}
+		if exists {
+			return ErrRegistryNotEmpty
+		}
+	}
+
+	const insertContract = `
+		INSERT INTO contracts (
+			network, contract_id, current_wasm_hash, name, source_url, source_commit,
+			first_seen, last_refreshed, missing_since
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (network, contract_id) DO NOTHING`
+
+	const insertSpec = `
+		INSERT INTO specs (network, contract_id, wasm_hash, spec, symbols, decoded_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (network, contract_id, wasm_hash) DO NOTHING`
+
+	for _, cs := range snapshot.Contracts {
+		c := cs.Contract
+		if _, err := tx.Exec(ctx, insertContract,
+			c.Network, c.ContractID, c.CurrentWasmHash, c.Name, c.SourceURL, c.SourceCommit,
+			c.FirstSeen, c.LastRefreshed, c.MissingSince); err != nil {
+			return fmt.Errorf("store: importing contract %s: %w", c.ContractID, err)
+		}
+
+		for _, version := range cs.Versions {
+			body, err := json.Marshal(version.Interface)
+			if err != nil {
+				return fmt.Errorf("store: encoding imported spec for %s: %w", c.ContractID, err)
+			}
+			if _, err := tx.Exec(ctx, insertSpec,
+				c.Network, c.ContractID, version.WasmHash, body,
+				joinSymbols(version.Interface), version.DecodedAt); err != nil {
+				return fmt.Errorf("store: importing spec for %s: %w", c.ContractID, err)
+			}
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit import: %w", err)
+	}
+	return nil
+}
+
 // ListContracts returns a filtered, paged listing ordered by most recently
 // refreshed, along with the total number of matches.
 func (p *Postgres) ListContracts(ctx context.Context, f ListFilter) (*ContractPage, error) {
@@ -249,10 +431,16 @@ func (p *Postgres) ListContracts(ctx context.Context, f ListFilter) (*ContractPa
 	// concatenated fragments.
 	// Symbols come from the spec the contract currently runs, so a function
 	// removed by an upgrade stops matching.
+	//
+	// The exact-name filters read the jsonb rather than the symbols
+	// column, because symbols flattens functions, types and events into
+	// one list: it cannot say whether "transfer" is a function or a type.
+	// Asking the jsonb keeps that distinction, and costs a scan of one
+	// spec per row rather than a schema change.
 	const q = `
 		WITH matched AS (
 			SELECT c.network, c.contract_id, c.current_wasm_hash, c.name, c.source_url, c.source_commit,
-			       c.first_seen, c.last_refreshed, COALESCE(s.symbols, '') AS symbols
+			       c.first_seen, c.last_refreshed, c.missing_since, c.implements, COALESCE(s.symbols, '') AS symbols
 			FROM contracts c
 			LEFT JOIN specs s
 			  ON s.network = c.network AND s.contract_id = c.contract_id
@@ -261,14 +449,34 @@ func (p *Postgres) ListContracts(ctx context.Context, f ListFilter) (*ContractPa
 			  AND ($2 = '' OR c.contract_id ILIKE '%' || $2 || '%'
 			               OR c.name ILIKE '%' || $2 || '%'
 			               OR s.symbols ILIKE '%' || $2 || '%')
+			  AND NOT EXISTS (
+			      SELECT 1 FROM unnest(COALESCE($3::text[], '{}'::text[])) AS want(name)
+			      WHERE NOT EXISTS (
+			          SELECT 1 FROM jsonb_array_elements(COALESCE(s.spec->'functions', '[]'::jsonb)) AS f
+			          WHERE f->>'name' = want.name))
+			  AND NOT EXISTS (
+			      SELECT 1 FROM unnest(COALESCE($4::text[], '{}'::text[])) AS want(name)
+			      WHERE NOT EXISTS (
+			          SELECT 1 FROM jsonb_array_elements(COALESCE(s.spec->'types'->'structs', '[]'::jsonb)) AS t
+			          WHERE t->>'name' = want.name
+			          UNION ALL
+			          SELECT 1 FROM jsonb_array_elements(COALESCE(s.spec->'types'->'unions', '[]'::jsonb)) AS t
+			          WHERE t->>'name' = want.name
+			          UNION ALL
+			          SELECT 1 FROM jsonb_array_elements(COALESCE(s.spec->'types'->'enums', '[]'::jsonb)) AS t
+			          WHERE t->>'name' = want.name
+			          UNION ALL
+			          SELECT 1 FROM jsonb_array_elements(COALESCE(s.spec->'types'->'error_enums', '[]'::jsonb)) AS t
+			          WHERE t->>'name' = want.name))
+			  AND (COALESCE(cardinality($5::text[]), 0) = 0 OR c.implements @> $5::text[])
 		)
 		SELECT network, contract_id, current_wasm_hash, name, source_url, source_commit, first_seen, last_refreshed,
-		       symbols, count(*) OVER () AS total
+		       missing_since, implements, symbols, count(*) OVER () AS total
 		FROM matched
 		ORDER BY last_refreshed DESC, contract_id
-		LIMIT $3 OFFSET $4`
+		LIMIT $6 OFFSET $7`
 
-	rows, err := p.pool.Query(ctx, q, f.Network, escapeLike(f.Query), f.Limit, f.Offset)
+	rows, err := p.pool.Query(ctx, q, f.Network, escapeLike(f.Query), f.Functions, f.Types, f.Implements, f.Limit, f.Offset)
 	if err != nil {
 		return nil, fmt.Errorf("store: listing contracts: %w", err)
 	}
@@ -281,7 +489,7 @@ func (p *Postgres) ListContracts(ctx context.Context, f ListFilter) (*ContractPa
 		var total int
 		if err := rows.Scan(
 			&c.Network, &c.ContractID, &c.CurrentWasmHash, &c.Name, &c.SourceURL, &c.SourceCommit,
-			&c.FirstSeen, &c.LastRefreshed, &symbols, &total,
+			&c.FirstSeen, &c.LastRefreshed, &c.MissingSince, &c.Implements, &symbols, &total,
 		); err != nil {
 			return nil, fmt.Errorf("store: scanning contract: %w", err)
 		}
@@ -304,6 +512,89 @@ func (p *Postgres) ListContracts(ctx context.Context, f ListFilter) (*ContractPa
 	}
 
 	return page, nil
+}
+
+// ListContractsByWasm returns a paged listing of the contracts that run the
+// given WASM hash, and — with Ever set — of the ones that ran it in the
+// past.
+//
+// The "ever" case reads the specs table, which keeps one row per interface
+// a contract has ever run; the join is on its unique key, so it costs an
+// index lookup per candidate row.
+func (p *Postgres) ListContractsByWasm(ctx context.Context, f WasmFilter) (*WasmContractPage, error) {
+	f.Normalize()
+
+	// $1 empty means "any network", $3 says whether the contracts that
+	// only ran the hash in the past count too.
+	const q = `
+		SELECT c.network, c.contract_id, c.current_wasm_hash, c.name, c.source_url, c.source_commit,
+		       c.first_seen, c.last_refreshed, c.missing_since,
+		       c.current_wasm_hash = $2 AS current,
+		       count(*) OVER () AS total
+		FROM contracts c
+		WHERE ($1 = '' OR c.network = $1)
+		  AND (c.current_wasm_hash = $2
+		       OR ($3 AND EXISTS (
+		           SELECT 1 FROM specs s
+		           WHERE s.network = c.network AND s.contract_id = c.contract_id AND s.wasm_hash = $2)))
+		ORDER BY c.last_refreshed DESC, c.contract_id
+		LIMIT $4 OFFSET $5`
+
+	rows, err := p.pool.Query(ctx, q, f.Network, f.WasmHash, f.Ever, f.Limit, f.Offset)
+	if err != nil {
+		return nil, fmt.Errorf("store: listing contracts for wasm %s: %w", f.WasmHash, err)
+	}
+	defer rows.Close()
+
+	page := &WasmContractPage{Contracts: []WasmContract{}}
+	for rows.Next() {
+		var c WasmContract
+		var total int
+		if err := rows.Scan(
+			&c.Network, &c.ContractID, &c.CurrentWasmHash, &c.Name, &c.SourceURL, &c.SourceCommit,
+			&c.FirstSeen, &c.LastRefreshed, &c.MissingSince, &c.Current, &total,
+		); err != nil {
+			return nil, fmt.Errorf("store: scanning contract: %w", err)
+		}
+		page.Contracts = append(page.Contracts, c)
+		page.Total = total
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: listing contracts for wasm %s: %w", f.WasmHash, err)
+	}
+
+	// The window function only reports a total on rows that came back, so a
+	// page past the end needs a separate count to stay accurate.
+	if len(page.Contracts) == 0 && f.Offset > 0 {
+		total, err := p.countContractsByWasm(ctx, f)
+		if err != nil {
+			return nil, err
+		}
+		page.Total = total
+	}
+
+	return page, nil
+}
+
+// countContractsByWasm counts the contracts that run a given WASM hash.
+//
+// It must mirror ListContractsByWasm's predicate, or a page past the end
+// would report a different total from the pages before it.
+func (p *Postgres) countContractsByWasm(ctx context.Context, f WasmFilter) (int, error) {
+	const q = `
+		SELECT count(*)
+		FROM contracts c
+		WHERE ($1 = '' OR c.network = $1)
+		  AND (c.current_wasm_hash = $2
+		       OR ($3 AND EXISTS (
+		           SELECT 1 FROM specs s
+		           WHERE s.network = c.network AND s.contract_id = c.contract_id AND s.wasm_hash = $2)))`
+
+	var total int
+	if err := p.pool.QueryRow(ctx, q, f.Network, f.WasmHash, f.Ever).Scan(&total); err != nil {
+		return 0, fmt.Errorf("store: counting contracts for wasm %s: %w", f.WasmHash, err)
+	}
+	return total, nil
 }
 
 // ListNetworks returns the distinct networks represented in the registry.
@@ -329,6 +620,149 @@ func (p *Postgres) ListNetworks(ctx context.Context) ([]string, error) {
 	return networks, nil
 }
 
+// Stats summarises the registry with two aggregate queries: one for the
+// per-network counts, and one for the most recently registered contract.
+func (p *Postgres) Stats(ctx context.Context) (*Stats, error) {
+	const q = `
+		WITH per_contract AS (
+			SELECT c.network, c.contract_id, count(s.id) AS versions
+			FROM contracts c
+			LEFT JOIN specs s
+			  ON s.network = c.network AND s.contract_id = c.contract_id
+			GROUP BY c.network, c.contract_id
+		)
+		SELECT network, count(*) AS contracts, COALESCE(sum(versions), 0)::bigint AS versions
+		FROM per_contract
+		GROUP BY network
+		ORDER BY network`
+
+	rows, err := p.pool.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("store: counting registry: %w", err)
+	}
+	defer rows.Close()
+
+	stats := &Stats{Networks: []NetworkStats{}}
+	for rows.Next() {
+		var entry NetworkStats
+		if err := rows.Scan(&entry.Network, &entry.Contracts, &entry.Versions); err != nil {
+			return nil, fmt.Errorf("store: scanning registry counts: %w", err)
+		}
+		stats.Networks = append(stats.Networks, entry)
+		stats.Contracts += entry.Contracts
+		stats.Versions += entry.Versions
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: counting registry: %w", err)
+	}
+
+	const latestQ = `
+		SELECT network, contract_id, current_wasm_hash, name, source_url, source_commit, first_seen, last_refreshed, missing_since
+		FROM contracts
+		ORDER BY first_seen DESC, contract_id
+		LIMIT 1`
+
+	var latest Contract
+	err = p.pool.QueryRow(ctx, latestQ).Scan(
+		&latest.Network, &latest.ContractID, &latest.CurrentWasmHash, &latest.Name,
+		&latest.SourceURL, &latest.SourceCommit, &latest.FirstSeen, &latest.LastRefreshed,
+		&latest.MissingSince,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return stats, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: loading most recently registered contract: %w", err)
+	}
+	stats.Latest = &latest
+	return stats, nil
+}
+
+// ListUpgrades returns recent interface upgrades, newest first.
+//
+// The window function pairs every spec row with the version its contract
+// ran before it. Row one of each contract is its registration, so only rows
+// two and later are upgrades.
+func (p *Postgres) ListUpgrades(ctx context.Context, f UpgradeFilter) (*UpgradePage, error) {
+	f.Normalize()
+
+	const q = `
+		WITH ordered AS (
+			SELECT network, contract_id, wasm_hash, decoded_at,
+			       lag(wasm_hash) OVER (
+			           PARTITION BY network, contract_id
+			           ORDER BY decoded_at, id
+			       ) AS old_wasm_hash,
+			       row_number() OVER (
+			           PARTITION BY network, contract_id
+			           ORDER BY decoded_at, id
+			       ) AS position
+			FROM specs
+			WHERE ($1 = '' OR network = $1)
+		)
+		SELECT network, contract_id, old_wasm_hash, wasm_hash, decoded_at, count(*) OVER () AS total
+		FROM ordered
+		WHERE position > 1
+		ORDER BY decoded_at DESC, contract_id, wasm_hash
+		LIMIT $2 OFFSET $3`
+
+	rows, err := p.pool.Query(ctx, q, f.Network, f.Limit, f.Offset)
+	if err != nil {
+		return nil, fmt.Errorf("store: listing upgrades: %w", err)
+	}
+	defer rows.Close()
+
+	page := &UpgradePage{Upgrades: []Upgrade{}}
+	for rows.Next() {
+		var u Upgrade
+		var total int
+		if err := rows.Scan(&u.Network, &u.ContractID, &u.OldWasmHash, &u.NewWasmHash, &u.ObservedAt, &total); err != nil {
+			return nil, fmt.Errorf("store: scanning upgrade: %w", err)
+		}
+		page.Upgrades = append(page.Upgrades, u)
+		page.Total = total
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: listing upgrades: %w", err)
+	}
+
+	// The window function only reports a total on rows that came back, so
+	// a page past the end needs the count on its own; otherwise it would
+	// claim the registry has no upgrades at all.
+	if len(page.Upgrades) == 0 && f.Offset > 0 {
+		total, err := p.countUpgrades(ctx, f.Network)
+		if err != nil {
+			return nil, err
+		}
+		page.Total = total
+	}
+
+	return page, nil
+}
+
+// countUpgrades counts the spec rows beyond each contract's first, matching
+// ListUpgrades' predicate.
+func (p *Postgres) countUpgrades(ctx context.Context, network string) (int, error) {
+	const q = `
+		SELECT count(*)
+		FROM (
+			SELECT network, contract_id, wasm_hash,
+			       row_number() OVER (
+			           PARTITION BY network, contract_id
+			           ORDER BY decoded_at, id
+			       ) AS position
+			FROM specs
+			WHERE ($1 = '' OR network = $1)
+		) ordered
+		WHERE position > 1`
+
+	var total int
+	if err := p.pool.QueryRow(ctx, q, network).Scan(&total); err != nil {
+		return 0, fmt.Errorf("store: counting upgrades: %w", err)
+	}
+	return total, nil
+}
+
 func (p *Postgres) countContracts(ctx context.Context, f ListFilter) (int, error) {
 	// Must mirror ListContracts' predicate, or a page past the end would
 	// report a different total from the pages before it.
@@ -341,10 +775,30 @@ func (p *Postgres) countContracts(ctx context.Context, f ListFilter) (int, error
 		WHERE ($1 = '' OR c.network = $1)
 		  AND ($2 = '' OR c.contract_id ILIKE '%' || $2 || '%'
 		               OR c.name ILIKE '%' || $2 || '%'
-		               OR s.symbols ILIKE '%' || $2 || '%')`
+		               OR s.symbols ILIKE '%' || $2 || '%')
+		  AND NOT EXISTS (
+		      SELECT 1 FROM unnest(COALESCE($3::text[], '{}'::text[])) AS want(name)
+		      WHERE NOT EXISTS (
+		          SELECT 1 FROM jsonb_array_elements(COALESCE(s.spec->'functions', '[]'::jsonb)) AS f
+		          WHERE f->>'name' = want.name))
+		  AND NOT EXISTS (
+		      SELECT 1 FROM unnest(COALESCE($4::text[], '{}'::text[])) AS want(name)
+		      WHERE NOT EXISTS (
+		          SELECT 1 FROM jsonb_array_elements(COALESCE(s.spec->'types'->'structs', '[]'::jsonb)) AS t
+		          WHERE t->>'name' = want.name
+		          UNION ALL
+		          SELECT 1 FROM jsonb_array_elements(COALESCE(s.spec->'types'->'unions', '[]'::jsonb)) AS t
+		          WHERE t->>'name' = want.name
+		          UNION ALL
+		          SELECT 1 FROM jsonb_array_elements(COALESCE(s.spec->'types'->'enums', '[]'::jsonb)) AS t
+		          WHERE t->>'name' = want.name
+		          UNION ALL
+		          SELECT 1 FROM jsonb_array_elements(COALESCE(s.spec->'types'->'error_enums', '[]'::jsonb)) AS t
+		          WHERE t->>'name' = want.name))
+		  AND (COALESCE(cardinality($5::text[]), 0) = 0 OR c.implements @> $5::text[])`
 
 	var total int
-	if err := p.pool.QueryRow(ctx, q, f.Network, escapeLike(f.Query)).Scan(&total); err != nil {
+	if err := p.pool.QueryRow(ctx, q, f.Network, escapeLike(f.Query), f.Functions, f.Types, f.Implements).Scan(&total); err != nil {
 		return 0, fmt.Errorf("store: counting contracts: %w", err)
 	}
 	return total, nil

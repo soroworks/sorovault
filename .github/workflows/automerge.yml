@@ -7,7 +7,7 @@ name: Auto-merge
 
 on:
   workflow_run:
-    workflows: [CI, Security]
+    workflows: [CI, Security, Malware scan]
     types: [completed]
   # Catches PRs whose last check finished while another merge was running.
   schedule:
@@ -19,25 +19,15 @@ on:
         type: boolean
         default: true
 
-# The default for every job in this workflow, and the only job's own grant
-# as well. The bot merges pull requests, so it needs write access to the
-# repository, to pull requests and to issues; it reads check runs; and it
-# dispatches CI on main after a merge. Each scope is spelled out below, and
-# nothing beyond them is granted.
+# .github/scripts/automerge.sh needs write on the PR itself, the issues it
+# closes and the labels/comments it leaves, plus the ability to re-run CI.
 permissions:
-  # Squash-merging a pull request writes to the repository's history.
   contents: write
-  # Commenting on and editing pull requests.
   pull-requests: write
-  # Labels live on issues as far as the API is concerned — including a pull
-  # request's — and the bot creates labels, labels pull requests and closes
-  # the issues a merged pull request resolves.
   issues: write
-  # Reading the check runs of a pull request's head commit, which is how the
-  # bot decides whether the pull request may be merged.
+  # Reading check results to decide whether a PR may merge.
   checks: read
-  # Dispatching the CI workflow on main after a merge, because a push made
-  # with the workflow token does not trigger a workflow by itself.
+  # Re-running CI on main after a merge (GITHUB_TOKEN pushes do not trigger it).
   actions: write
 
 # One merge at a time: each merge moves main and invalidates other PRs' checks.
@@ -48,30 +38,15 @@ concurrency:
 jobs:
   automerge:
     runs-on: ubuntu-latest
-
-    # The same scopes as the workflow-level default, spelled out for the one
-    # job that runs. The script needs all of them: it reads check runs,
-    # merges the pull request, labels and comments on it, closes the issues
-    # it resolves, and triggers CI on main.
-    permissions:
-      contents: write
-      pull-requests: write
-      issues: write
-      checks: read
-      actions: write
-
     steps:
-      # Pinned to a commit rather than a tag: a tag is a mutable name, so
-      # whoever can move it decides what this workflow runs — and this job
-      # holds a token that can write to the repository. The version is kept
-      # in the comment, which is also what Dependabot updates.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
+          fetch-depth: 0
       - name: Merge passing pull requests
         env:
           GH_TOKEN: ${{ github.token }}
-          REQUIRED_CHECKS: "test codegen-typecheck helm openapi-lint docker workflow-hygiene govulncheck"
+          REQUIRED_CHECKS: "test codegen-typecheck openapi-lint docker govulncheck malware-scan"
           PROTECTED_PATHS: ".github/ .goreleaser.yaml Dockerfile internal/codegen/testdata/package.json internal/codegen/testdata/tsconfig.json"
           CI_WORKFLOW: "ci.yml"
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}

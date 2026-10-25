@@ -9,6 +9,7 @@ package wasmtest
 
 import (
 	"encoding/binary"
+	"math"
 )
 
 // Section is one custom section to place in a module.
@@ -36,7 +37,7 @@ func ModuleWithNonCustom(id byte, body []byte, sections ...Section) []byte {
 	out := header()
 
 	out = append(out, id)
-	out = append(out, uvarint(uint32(len(body)))...)
+	out = append(out, uvarint(encodedLength(len(body)))...)
 	out = append(out, body...)
 
 	for _, s := range sections {
@@ -55,12 +56,22 @@ func header() []byte {
 // customSection encodes one custom section: section ID 0, then the payload
 // size, then a length-prefixed name followed by the body.
 func customSection(name string, body []byte) []byte {
-	payload := append(uvarint(uint32(len(name))), name...)
+	payload := append(uvarint(encodedLength(len(name))), name...)
 	payload = append(payload, body...)
 
 	out := []byte{0x00}
-	out = append(out, uvarint(uint32(len(payload)))...)
+	out = append(out, uvarint(encodedLength(len(payload)))...)
 	return append(out, payload...)
+}
+
+// encodedLength narrows a slice length to the uint32 the WASM format uses.
+// Test modules are tiny, but the check keeps a mistake from silently
+// truncating a fabricated section.
+func encodedLength(n int) uint32 {
+	if n < 0 || uint64(n) > math.MaxUint32 {
+		panic("wasmtest: section too large")
+	}
+	return uint32(n) //nolint:gosec // bounds checked above
 }
 
 // uvarint encodes a uint32 as unsigned LEB128.

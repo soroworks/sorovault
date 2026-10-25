@@ -42,16 +42,22 @@ cover: ## Write a coverage profile and print the total
 	go test -coverprofile=coverage.out -covermode=atomic ./...
 	@go tool cover -func=coverage.out | tail -1
 
+# Keep this in lockstep with .github/workflows/ci.yml. Running through `go run`
+# makes the version the source of truth rather than whichever binary happens
+# to be on PATH.
+GOLANGCI_LINT_VERSION ?= v2.13.2
+GOLANGCI_LINT         := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+
 .PHONY: lint
-lint: ## Vet and check formatting
-	go vet ./...
-	@unformatted=$$(gofmt -l . | grep -v '^vendor/' || true); \
-	if [ -n "$$unformatted" ]; then \
-		echo "not gofmt'd:"; echo "$$unformatted"; exit 1; \
-	fi
+lint: ## Run the pinned golangci-lint
+	$(GOLANGCI_LINT) run
+
+.PHONY: test-live
+test-live: ## Run the opt-in live smoke test against testnet (requires SOROVAULT_LIVE=1)
+	@go test -run TestLiveSmokeTest -v ./internal/stellar...
 
 .PHONY: check
-check: lint test ## Vet, check formatting and test — run before opening a PR
+check: lint test ## Lint and test — run before opening a PR
 
 .PHONY: fmt
 fmt: ## Format the code
@@ -62,9 +68,10 @@ tidy: ## Tidy go.mod and go.sum
 	go mod tidy
 
 .PHONY: golden
-golden: ## Regenerate the golden ABI fixture and the TypeScript client built from it
+golden: ## Regenerate the golden ABI fixture, the TypeScript client built from it and the JSON schemas
 	go test ./internal/spec -run TestDecodeFixture -update
 	go test ./internal/codegen -run TestGoldenZKVote -update
+	go test ./internal/codegen -run TestGoldenZKVoteSchemas -update
 
 .PHONY: up
 up: ## Start Postgres, run migrations and serve, via docker compose

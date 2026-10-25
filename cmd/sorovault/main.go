@@ -52,10 +52,14 @@ Configuration is read from the environment:
 
 	root.AddCommand(
 		newAddCmd(),
+		newRemoveCmd(),
 		newListCmd(),
 		newGetCmd(),
+		newVersionsCmd(),
 		newCodegenCmd(),
 		newRefreshCmd(),
+		newExportCmd(),
+		newImportCmd(),
 		newServeCmd(),
 		newMigrateCmd(),
 		newDoctorCmd(doctorDepsFromEnv),

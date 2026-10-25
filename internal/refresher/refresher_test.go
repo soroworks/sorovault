@@ -48,7 +48,7 @@ func (c *clock) Advance(d time.Duration) {
 func contractID(t *testing.T, n int) string {
 	t.Helper()
 	var raw [32]byte
-	raw[0], raw[1] = byte(n), byte(n>>8)
+	raw[0], raw[1] = byte(n), byte(n>>8) //nolint:gosec // n is a small test counter
 	id, err := strkey.Encode(strkey.VersionByteContract, raw[:])
 	require.NoError(t, err)
 	return id
@@ -106,6 +106,31 @@ func (f *fixture) refresher(t *testing.T) *refresher.Refresher {
 	return r
 }
 
+// refresherWith builds a refresher that reports upgrades to a webhook.
+func (f *fixture) refresherWith(t *testing.T, opts refresher.WebhookOptions) *refresher.Refresher {
+	t.Helper()
+
+	opts.Logger = f.log
+	webhook, err := refresher.NewWebhook(opts)
+	require.NoError(t, err)
+
+	r, err := refresher.New(f.reg, refresher.Options{
+		Interval: interval,
+		Logger:   f.log,
+		Notifier: webhook,
+		Now:      f.clock.Now,
+		Wait: func(ctx context.Context, d time.Duration) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			f.clock.Advance(d)
+			return nil
+		},
+	})
+	require.NoError(t, err)
+	return r
+}
+
 func TestSweepSpreadsRefreshesAcrossInterval(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
@@ -149,6 +174,38 @@ func TestNewRejectsNonPositiveInterval(t *testing.T) {
 	}
 }
 
+// TestLastSweepReportsTheMostRecentSweep proves the in-memory summary the
+// statistics endpoint reads is recorded once Run completes a sweep, and not
+// before.
+func TestLastSweepReportsTheMostRecentSweep(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	f.register(t, contractID(t, 1), "hello")
+	f.clock.Advance(interval + time.Minute)
+
+	r := f.refresher(t)
+	_, ok := r.LastSweep()
+	assert.False(t, ok, "no sweep has finished yet")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx) }()
+
+	require.Eventually(t, func() bool {
+		_, ok := r.LastSweep()
+		return ok
+	}, 5*time.Second, 10*time.Millisecond)
+
+	record, ok := r.LastSweep()
+	require.True(t, ok)
+	assert.Equal(t, refresher.Summary{Checked: 1}, record.Summary)
+	assert.Equal(t, f.clock.Now().UTC(), record.CompletedAt)
+
+	cancel()
+	require.NoError(t, <-done)
+}
+
 func TestSweepSkipsRecentlyRefreshed(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
@@ -162,6 +219,29 @@ func TestSweepSkipsRecentlyRefreshed(t *testing.T) {
 
 	assert.Equal(t, refresher.Summary{}, sum)
 	assert.Equal(t, before, f.fake.Calls["WasmHash"], "a fresh contract must not cost an RPC call")
+}
+
+// TestSweepAllRefreshesRecentlyRefreshedContracts proves the manual sweep
+// ignores staleness: it is one pass over everything, for cron and recovery.
+func TestSweepAllRefreshesRecentlyRefreshedContracts(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	for i := 0; i < 3; i++ {
+		f.register(t, contractID(t, i), "hello")
+	}
+
+	before := f.fake.Calls["WasmHash"]
+	r := f.refresher(t)
+
+	sum, err := r.Sweep(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, refresher.Summary{}, sum, "a scheduled sweep has nothing stale to do")
+
+	sum, err = r.SweepAll(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, refresher.Summary{Checked: 3}, sum)
+	assert.Equal(t, 3, f.fake.Calls["WasmHash"]-before,
+		"every contract must be checked even though it was just refreshed")
 }
 
 func TestSweepDetectsUpgrade(t *testing.T) {
@@ -211,17 +291,86 @@ func TestSweepAdvancesLastRefreshedOnUnchanged(t *testing.T) {
 func TestSweepContinuesPastFailures(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	gone, kept := contractID(t, 1), contractID(t, 2)
-	f.register(t, gone, "hello")
+	broken, kept := contractID(t, 1), contractID(t, 2)
+	f.register(t, broken, "hello")
 	f.register(t, kept, "hello")
 
-	f.fake.Remove(gone)
+	// One contract's RPC calls fail; the other must still be refreshed.
+	f.fake.BeforeFetch = func(ctx context.Context, contractID string) error {
+		if contractID == broken {
+			return errors.New("rpc down")
+		}
+		return nil
+	}
 	f.fake.Upgrade(kept, moduleWith(t, "v2"))
 	f.clock.Advance(interval + time.Minute)
 
 	sum, err := f.refresher(t).Sweep(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, refresher.Summary{Checked: 2, Changed: 1, Failed: 1}, sum)
+}
+
+// TestSweepCountsAMissingContractApart proves a contract that has gone from
+// the network is not counted as a failure: the registry keeps what it knows
+// about it, and says when it disappeared.
+func TestSweepCountsAMissingContractApart(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	id := contractID(t, 1)
+	f.register(t, id, "hello")
+
+	f.fake.Remove(id)
+	f.clock.Advance(interval + time.Minute)
+
+	sum, err := f.refresher(t).Sweep(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, refresher.Summary{Checked: 1, Missing: 1}, sum,
+		"a missing contract is not a failed refresh")
+
+	got, err := f.db.GetContract(context.Background(), "testnet", id)
+	require.NoError(t, err)
+	require.NotNil(t, got.MissingSince, "the contract must be marked as missing")
+
+	// The mark is not moved by the next sweep.
+	first := *got.MissingSince
+	f.clock.Advance(interval + time.Minute)
+	sum, err = f.refresher(t).Sweep(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, refresher.Summary{Checked: 1, Missing: 1}, sum)
+
+	got, err = f.db.GetContract(context.Background(), "testnet", id)
+	require.NoError(t, err)
+	require.NotNil(t, got.MissingSince)
+	assert.Equal(t, first.UTC(), got.MissingSince.UTC(),
+		"the mark says when the contract went away, not when it was last looked for")
+}
+
+// TestSweepClearsTheMissingMark proves a contract that comes back is
+// marked live again.
+func TestSweepClearsTheMissingMark(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	id := contractID(t, 1)
+	f.register(t, id, "hello")
+
+	f.fake.Remove(id)
+	f.clock.Advance(interval + time.Minute)
+	_, err := f.refresher(t).Sweep(context.Background())
+	require.NoError(t, err)
+
+	got, err := f.db.GetContract(context.Background(), "testnet", id)
+	require.NoError(t, err)
+	require.NotNil(t, got.MissingSince)
+
+	f.fake.Deploy(id, moduleWith(t, "hello"))
+	f.clock.Advance(interval + time.Minute)
+	sum, err := f.refresher(t).Sweep(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, refresher.Summary{Checked: 1}, sum)
+
+	got, err = f.db.GetContract(context.Background(), "testnet", id)
+	require.NoError(t, err)
+	assert.Nil(t, got.MissingSince)
 }
 
 // More contracts than fit on one listing page, every one of which moves to

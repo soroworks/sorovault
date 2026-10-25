@@ -49,7 +49,7 @@ func newBlockingNetwork(t *testing.T) *blockingNetwork {
 		entered: make(chan struct{}, 64),
 		release: make(chan struct{}),
 	}
-	b.Fake.BeforeFetch = func(ctx context.Context, contractID string) error {
+	b.BeforeFetch = func(ctx context.Context, contractID string) error {
 		inFlight := b.inFlight.Add(1)
 		for {
 			peak := b.peak.Load()
@@ -157,7 +157,7 @@ func TestRegisterReleasesCapacityAfterFailure(t *testing.T) {
 
 	network := newBlockingNetwork(t)
 	network.Deploy(idA, moduleWith(t, "hello"))
-	network.Fake.FetchErr = errors.New("the network is having a bad day")
+	network.FetchErr = errors.New("the network is having a bad day")
 	reg := network.registry(t, 1)
 
 	done := make(chan error, 1)
@@ -184,7 +184,7 @@ func TestRegisterReleasesCapacityAfterFailure(t *testing.T) {
 
 	// The slot is free again: a second registration is not refused for
 	// lack of capacity.
-	network.Fake.FetchErr = nil
+	network.FetchErr = nil
 	_, err := reg.Register(context.Background(), idA)
 	require.NoError(t, err, "a failed registration must not hold a slot")
 }

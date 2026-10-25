@@ -1,3 +1,10 @@
+# `make up` passes --build, so local development still compiles the image.
+# Without a build, compose uses the published image (or SOROVAULT_IMAGE, for
+# a pinned release) and does not need the Go toolchain.
+x-sorovault: &sorovault
+  image: ${SOROVAULT_IMAGE:-ghcr.io/soroworks/sorovault:latest}
+  build: .
+
 services:
   db:
     image: postgres:16-alpine
@@ -18,17 +25,30 @@ services:
   # Applies pending schema migrations, then exits. The API waits for it so a
   # fresh stack comes up in the right order.
   migrate:
-    build: .
+    <<: *sorovault
     command: ["migrate"]
     environment:
       DATABASE_URL: postgres://sorovault:sorovault@db:5432/sorovault?sslmode=disable
+    # Neither service writes to its own filesystem: the templates and the
+    # migrations are embedded in the binary, and the database lives in the db
+    # container. Dropping every capability and forbidding privilege escalation
+    # costs nothing for the same reason — the process only ever opens sockets.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    # The image's healthcheck probes the serve process. This container applies
+    # migrations and exits, so it has nothing to answer; without this it would
+    # be reported unhealthy even though it succeeded.
+    healthcheck:
+      disable: true
     depends_on:
       db:
         condition: service_healthy
     restart: on-failure
 
   api:
-    build: .
+    <<: *sorovault
     command: ["serve"]
     environment:
       DATABASE_URL: postgres://sorovault:sorovault@db:5432/sorovault?sslmode=disable
@@ -37,6 +57,10 @@ services:
       HTTP_ADDR: ":8080"
       LOG_LEVEL: ${LOG_LEVEL:-info}
       REFRESH_INTERVAL: ${REFRESH_INTERVAL:-0}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "8080:8080"
     depends_on:

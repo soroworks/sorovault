@@ -161,11 +161,13 @@ func TestCustomSectionPaddedLength(t *testing.T) {
 	name := wasm.SectionContractSpec
 	body := []byte("padded")
 
-	payload := append(wasmtest.PaddedUvarint(uint32(len(name)), 3), name...)
+	nameLen := uint32(len(name)) //nolint:gosec // test fixture length
+	payload := append(wasmtest.PaddedUvarint(nameLen, 3), name...)
 	payload = append(payload, body...)
 
 	module := []byte{0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, 0x00}
-	module = append(module, wasmtest.PaddedUvarint(uint32(len(payload)), 4)...)
+	payloadLen := uint32(len(payload)) //nolint:gosec // test fixture length
+	module = append(module, wasmtest.PaddedUvarint(payloadLen, 4)...)
 	module = append(module, payload...)
 
 	got, err := wasm.CustomSection(module, name)

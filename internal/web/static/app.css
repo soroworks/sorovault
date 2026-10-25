@@ -1,4 +1,8 @@
 :root {
+  /* Both palettes are available, and the browser picks one from the OS
+     setting. Declaring it also themes form controls and scrollbars. */
+  color-scheme: light dark;
+
   --bg: #fbfbfa;
   --panel: #ffffff;
   --ink: #1c1c1a;
@@ -6,6 +10,16 @@
   --line: #e2e2dd;
   --accent: #1f6f5c;
   --accent-soft: #e6f1ed;
+  --missing: #a33f52;
+  --missing-soft: #fbecee;
+
+  /* Syntax highlighting. Every colour that carries text is a custom
+     property, so the dark palette is a single override rather than a
+     second set of rules. */
+  --syntax-parameter: #9a4f18;
+  --syntax-constructor: #a33f52;
+  --syntax-reference: #246d8a;
+
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
@@ -18,6 +32,12 @@
     --line: #2e312d;
     --accent: #6fcfae;
     --accent-soft: #23302b;
+    --missing: #f095a4;
+    --missing-soft: #2f2224;
+
+    --syntax-parameter: #f1ad72;
+    --syntax-constructor: #f095a4;
+    --syntax-reference: #78c6e4;
   }
 }
 
@@ -194,31 +214,149 @@ table { width: 100%; border-collapse: collapse; }
 .signature { overflow-wrap: anywhere; }
 .sig-keyword, .type-keyword { color: var(--dim); font-weight: 500; }
 .sig-function { color: var(--ink); font-weight: 700; }
-.sig-parameter { color: #9a4f18; }
-.type-constructor { color: #a33f52; font-weight: 600; }
+.sig-parameter { color: var(--syntax-parameter); }
+.type-constructor { color: var(--syntax-constructor); font-weight: 600; }
 .type-name, .type-parameter { color: var(--accent); }
-.type-reference, .type-definition { color: #246d8a; font-weight: 600; }
+.type-reference, .type-definition { color: var(--syntax-reference); font-weight: 600; }
 .type-reference { text-decoration-thickness: 1px; text-underline-offset: 2px; }
 .type-punctuation { color: var(--dim); }
 
-@media (prefers-color-scheme: dark) {
-  .sig-parameter { color: #f1ad72; }
-  .type-constructor { color: #f095a4; }
-  .type-reference, .type-definition { color: #78c6e4; }
+/* Symbol permalinks. The icon sits next to the heading it links to, so it
+   is visible without hovering, and quiet enough not to compete with it. */
+.anchor {
+  margin-left: .4rem;
+  font-size: .8em;
+  font-weight: 400;
+  color: var(--dim);
+  text-decoration: none;
+  vertical-align: middle;
+}
+
+.anchor:hover,
+.anchor:focus-visible { color: var(--accent); }
+
+.badge:hover,
+.badge:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
 }
 
 .doc {
   color: var(--dim);
   font-size: .875rem;
-  white-space: pre-wrap;
   margin: .4rem 0 .6rem;
-  max-height: 11rem;
+  max-height: 14rem;
   overflow-y: auto;
 }
+
+/* Documentation is written in Markdown, so it brings its own elements
+   along. */
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+
+.markdown p { margin: .5rem 0; }
+
+.markdown h1, .markdown h2, .markdown h3,
+.markdown h4, .markdown h5, .markdown h6 {
+  font-size: .92rem;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink);
+  margin: .8rem 0 .3rem;
+  border: 0;
+  padding: 0;
+}
+
+.markdown ul, .markdown ol { margin: .4rem 0; padding-left: 1.3rem; }
+.markdown li { margin: .15rem 0; }
+
+.markdown code {
+  font-family: var(--mono);
+  font-size: .9em;
+  background: var(--bg);
+  padding: .05rem .25rem;
+  border-radius: 3px;
+}
+
+.markdown pre {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: .5rem .7rem;
+  margin: .5rem 0;
+  overflow-x: auto;
+}
+
+.markdown pre code { background: none; padding: 0; }
+
+.markdown blockquote {
+  margin: .5rem 0;
+  padding: .1rem 0 .1rem .7rem;
+  border-left: 3px solid var(--line);
+}
+
+.markdown table { font-size: .85rem; margin: .5rem 0; }
+.markdown th, .markdown td { padding: .2rem .6rem .2rem 0; text-align: left; }
+.markdown th { font-weight: 600; color: var(--ink); }
+
+.markdown a { word-break: break-word; }
 
 .returns { font-size: .85rem; color: var(--dim); margin: .5rem 0 0; }
 .returns code { color: var(--accent); font-family: var(--mono); }
 .jsonlink { float: right; font-size: .8rem; text-decoration: none; }
+
+/* Copy buttons */
+
+/* The buttons are hidden unless the script that handles them has marked
+   the document, so a page without JavaScript shows the values as plain,
+   selectable text. */
+.copy { display: none; }
+
+html.js .copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  padding: 0;
+  color: var(--dim);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+html.js .copy:hover { color: var(--ink); border-color: var(--accent); }
+html.js .copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.title-row { display: flex; align-items: center; gap: .4rem; }
+.title-row h1 { margin-bottom: .35rem; }
+
+.signature-row { display: flex; align-items: baseline; gap: .4rem; }
+.signature-row h3 { margin-bottom: .4rem; }
+
+/* A hash is shown short but kept whole, so that it can be copied. */
+.truncate {
+  display: inline-block;
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 /* Facts list */
 
@@ -269,6 +407,19 @@ table { width: 100%; border-collapse: collapse; }
 
 .badge.current { font-weight: 600; }
 
+.badge.missing {
+  margin-left: .35rem;
+  background: var(--missing-soft);
+  color: var(--missing);
+  font-weight: 600;
+}
+
+.notice.missing {
+  border-left-color: var(--missing);
+  background: var(--missing-soft);
+  color: var(--missing);
+}
+
 .count-badge {
   font-size: .72rem;
   color: var(--dim);
@@ -296,6 +447,58 @@ table { width: 100%; border-collapse: collapse; }
   background: var(--panel);
   padding: .1rem .35rem;
   border-radius: 4px;
+}
+
+/* Register form */
+
+.register {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: .5rem;
+}
+
+.register label {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: .3rem;
+  font-size: .8rem;
+  color: var(--dim);
+}
+
+.register input {
+  padding: .55rem .7rem;
+  font: inherit;
+  font-family: var(--mono);
+  font-size: .875rem;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.register input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.register button {
+  padding: .55rem 1rem;
+  font: inherit;
+  cursor: pointer;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.register .notice { flex-basis: 100%; margin: .25rem 0 0; }
+
+.notice.error {
+  border-left-color: var(--missing);
+  background: var(--missing-soft);
+  color: var(--missing);
 }
 
 .jsonfoot { font-size: .85rem; color: var(--dim); margin-top: 2rem; }

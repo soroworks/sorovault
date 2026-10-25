@@ -31,6 +31,31 @@ archives:
 checksum:
   name_template: checksums.txt
 
+# One SPDX SBOM per archive, generated with Syft and uploaded alongside the
+# archive. Operators can compare it with what they actually deploy.
+sboms:
+  - artifacts: archive
+
+# Multi-arch images built from the binaries GoReleaser already produced, so
+# the embedded migrations travel with the same binary that ships in the
+# archives. Dockerfile.release only copies that binary into a runtime image.
+dockers_v2:
+  - images:
+      - ghcr.io/soroworks/sorovault
+    tags:
+      - "{{ .Version }}"
+      - "{{ .Tag }}"
+      - latest
+    dockerfile: Dockerfile.release
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      org.opencontainers.image.source: "{{ .GitURL }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.title: "{{ .ProjectName }}"
+
 changelog:
   sort: asc
   groups:

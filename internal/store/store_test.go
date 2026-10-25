@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/soroworks/sorovault/internal/model"
+	"github.com/soroworks/sorovault/internal/spec"
 	"github.com/soroworks/sorovault/internal/store"
 )
 
@@ -91,6 +92,18 @@ func iface(fnName string) *model.Interface {
 	}
 }
 
+func standardInterface() *model.Interface {
+	functions := make([]model.Function, 0, len(spec.SEP41.Functions))
+	for _, required := range spec.SEP41.Functions {
+		inputs := make([]model.Param, 0, len(required.Inputs))
+		for i, typ := range required.Inputs {
+			inputs = append(inputs, model.Param{Name: string(rune('a' + i)), Type: typ})
+		}
+		functions = append(functions, model.Function{Name: required.Name, Inputs: inputs, Outputs: append([]model.Type(nil), required.Outputs...)})
+	}
+	return &model.Interface{ABIVersion: model.ABIVersion, Functions: functions}
+}
+
 func contract(id, network, hash string) store.Contract {
 	return store.Contract{ContractID: id, Network: network, CurrentWasmHash: hash}
 }
@@ -101,6 +114,19 @@ const (
 )
 
 func runStoreSuite(t *testing.T, newStore factory) {
+	t.Run("filters by exact implemented standard", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "token-hash"), standardInterface()))
+		require.NoError(t, s.Save(ctx, contract(idB, "testnet", "plain-hash"), iface("transfer")))
+
+		page, err := s.ListContracts(ctx, store.ListFilter{Implements: []string{"sep41"}})
+		require.NoError(t, err)
+		require.Equal(t, 1, page.Total)
+		require.Len(t, page.Contracts, 1)
+		assert.Equal(t, idA, page.Contracts[0].ContractID)
+		assert.Equal(t, []string{"sep41"}, page.Contracts[0].Implements)
+	})
 	t.Run("catalogued wasm does not require a contract", func(t *testing.T) {
 		s := newStore(t)
 		ctx := context.Background()
@@ -399,6 +425,138 @@ func runStoreSuite(t *testing.T, newStore factory) {
 		}
 	})
 
+	t.Run("exact function names are matched exactly", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+
+		rich := iface("transfer")
+		rich.Functions = append(rich.Functions, model.Function{Name: "transfer_from"})
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h1"), rich))
+		require.NoError(t, s.Save(ctx, contract(idB, "testnet", "h2"), iface("balance")))
+
+		page, err := s.ListContracts(ctx, store.ListFilter{Functions: []string{"transfer"}})
+		require.NoError(t, err)
+		require.Equal(t, 1, page.Total)
+		assert.Equal(t, idA, page.Contracts[0].ContractID,
+			"transfer_from is not transfer")
+
+		page, err = s.ListContracts(ctx, store.ListFilter{Functions: []string{"transfer_from"}})
+		require.NoError(t, err)
+		require.Equal(t, 1, page.Total)
+		assert.Equal(t, idA, page.Contracts[0].ContractID)
+
+		page, err = s.ListContracts(ctx, store.ListFilter{Functions: []string{"Transfer"}})
+		require.NoError(t, err)
+		assert.Zero(t, page.Total, "the match is exact, and so is the case")
+
+		// Every requested function has to be there.
+		page, err = s.ListContracts(ctx, store.ListFilter{Functions: []string{"transfer", "balance"}})
+		require.NoError(t, err)
+		assert.Zero(t, page.Total, "no contract declares both functions")
+
+		page, err = s.ListContracts(ctx, store.ListFilter{Functions: []string{"transfer", "transfer_from"}})
+		require.NoError(t, err)
+		require.Equal(t, 1, page.Total)
+		assert.Equal(t, idA, page.Contracts[0].ContractID)
+	})
+
+	t.Run("exact type names are matched exactly", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+
+		rich := iface("f")
+		rich.Types.Structs = []model.Struct{{Name: "Balance", Fields: []model.StructField{}}}
+		rich.Types.Enums = []model.Enum{{Name: "State", Cases: []model.EnumCase{}}}
+		rich.Types.ErrorEnums = []model.ErrorEnum{{Name: "Failed", Cases: []model.EnumCase{}}}
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h1"), rich))
+		require.NoError(t, s.Save(ctx, contract(idB, "testnet", "h2"), iface("g")))
+
+		for _, name := range []string{"Balance", "State", "Failed"} {
+			page, err := s.ListContracts(ctx, store.ListFilter{Types: []string{name}})
+			require.NoError(t, err)
+			require.Equal(t, 1, page.Total, "type %q", name)
+			assert.Equal(t, idA, page.Contracts[0].ContractID)
+		}
+
+		page, err := s.ListContracts(ctx, store.ListFilter{Types: []string{"Bal"}})
+		require.NoError(t, err)
+		assert.Zero(t, page.Total, "a type name is matched exactly, not as a prefix")
+
+		page, err = s.ListContracts(ctx, store.ListFilter{Types: []string{"Balance", "State"}})
+		require.NoError(t, err)
+		require.Equal(t, 1, page.Total)
+		assert.Equal(t, idA, page.Contracts[0].ContractID)
+	})
+
+	t.Run("exact filters combine with the query and the network", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h1"), iface("transfer")))
+		require.NoError(t, s.Save(ctx, contract(idB, "public", "h2"), iface("balance")))
+
+		page, err := s.ListContracts(ctx, store.ListFilter{
+			Functions: []string{"balance"},
+			Network:   "public",
+		})
+		require.NoError(t, err)
+		require.Equal(t, 1, page.Total)
+		assert.Equal(t, idB, page.Contracts[0].ContractID)
+
+		page, err = s.ListContracts(ctx, store.ListFilter{
+			Functions: []string{"balance"},
+			Query:     "CDZZZPY",
+		})
+		require.NoError(t, err)
+		require.Equal(t, 1, page.Total)
+		assert.Equal(t, idB, page.Contracts[0].ContractID)
+
+		// The query matches one contract and the function filter another,
+		// so nothing matches both.
+		page, err = s.ListContracts(ctx, store.ListFilter{
+			Functions: []string{"balance"},
+			Query:     "CDZZXV",
+		})
+		require.NoError(t, err)
+		assert.Zero(t, page.Total, "the query and the function filter must both match")
+	})
+
+	t.Run("a contract that left the network is marked missing", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h1"), iface("f")))
+
+		since := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+		require.NoError(t, s.MarkMissing(ctx, "testnet", idA, since))
+
+		got, err := s.GetContract(ctx, "testnet", idA)
+		require.NoError(t, err)
+		require.NotNil(t, got.MissingSince)
+		assert.Equal(t, since, got.MissingSince.UTC())
+
+		// A second sighting must not move the mark: it says when the
+		// contract went away, not when it was last looked for.
+		require.NoError(t, s.MarkMissing(ctx, "testnet", idA, since.Add(time.Hour)))
+		got, err = s.GetContract(ctx, "testnet", idA)
+		require.NoError(t, err)
+		require.NotNil(t, got.MissingSince)
+		assert.Equal(t, since, got.MissingSince.UTC())
+
+		// Saving the contract again means it was live, so the mark goes.
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h1"), iface("f")))
+		got, err = s.GetContract(ctx, "testnet", idA)
+		require.NoError(t, err)
+		assert.Nil(t, got.MissingSince)
+	})
+
+	t.Run("marking an unknown contract is not found", func(t *testing.T) {
+		s := newStore(t)
+
+		err := s.MarkMissing(context.Background(), "testnet", idA, time.Now())
+		assert.ErrorIs(t, err, store.ErrNotFound)
+	})
+
 	t.Run("query is trimmed", func(t *testing.T) {
 		s := newStore(t)
 		ctx := context.Background()
@@ -481,6 +639,185 @@ func runStoreSuite(t *testing.T, newStore factory) {
 		assert.Equal(t, rich, got.Interface, "the stored ABI must survive a round trip unchanged")
 	})
 
+	t.Run("contracts are listed by the wasm they run", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h1"), iface("a")))
+		require.NoError(t, s.Save(ctx, contract(idB, "testnet", "h1"), iface("b")))
+
+		page, err := s.ListContractsByWasm(ctx, store.WasmFilter{Network: "testnet", WasmHash: "h1"})
+		require.NoError(t, err)
+		assert.Equal(t, 2, page.Total)
+		require.Len(t, page.Contracts, 2)
+		for _, c := range page.Contracts {
+			assert.True(t, c.Current, "both contracts run this hash")
+		}
+
+		page, err = s.ListContractsByWasm(ctx, store.WasmFilter{Network: "testnet", WasmHash: "h2"})
+		require.NoError(t, err)
+		assert.Zero(t, page.Total, "no contract runs this hash")
+		assert.Empty(t, page.Contracts, "an empty result must be [] rather than nil")
+	})
+
+	t.Run("the ever filter reaches contracts that ran the wasm in the past", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h1"), iface("a")))
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h2"), iface("a2")))
+		require.NoError(t, s.Save(ctx, contract(idB, "testnet", "h1"), iface("b")))
+
+		page, err := s.ListContractsByWasm(ctx, store.WasmFilter{Network: "testnet", WasmHash: "h1"})
+		require.NoError(t, err)
+		require.Equal(t, 1, page.Total, "only the contract that still runs the hash is listed")
+		assert.Equal(t, idB, page.Contracts[0].ContractID)
+
+		page, err = s.ListContractsByWasm(ctx, store.WasmFilter{Network: "testnet", WasmHash: "h1", Ever: true})
+		require.NoError(t, err)
+		require.Equal(t, 2, page.Total, "the upgraded contract ran the hash too")
+		for _, c := range page.Contracts {
+			if c.ContractID == idA {
+				assert.False(t, c.Current, "the upgraded contract no longer runs the hash")
+			} else {
+				assert.True(t, c.Current)
+			}
+		}
+	})
+
+	t.Run("the wasm listing is paged", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h1"), iface("a")))
+		require.NoError(t, s.Save(ctx, contract(idB, "testnet", "h1"), iface("b")))
+
+		firstPage, err := s.ListContractsByWasm(ctx, store.WasmFilter{Network: "testnet", WasmHash: "h1", Limit: 1})
+		require.NoError(t, err)
+		require.Len(t, firstPage.Contracts, 1)
+		assert.Equal(t, 2, firstPage.Total, "the total counts matches, not the page")
+
+		secondPage, err := s.ListContractsByWasm(ctx, store.WasmFilter{Network: "testnet", WasmHash: "h1", Limit: 1, Offset: 1})
+		require.NoError(t, err)
+		require.Len(t, secondPage.Contracts, 1)
+		assert.NotEqual(t, firstPage.Contracts[0].ContractID, secondPage.Contracts[0].ContractID,
+			"the second page must hold the other contract")
+
+		page, err := s.ListContractsByWasm(ctx, store.WasmFilter{Network: "testnet", WasmHash: "h1", Offset: 99})
+		require.NoError(t, err)
+		assert.Empty(t, page.Contracts)
+		assert.Equal(t, 2, page.Total, "paging past the end still reports the true total")
+	})
+
+	t.Run("the wasm listing is scoped to one network", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h1"), iface("a")))
+		require.NoError(t, s.Save(ctx, contract(idA, "public", "h1"), iface("b")))
+
+		page, err := s.ListContractsByWasm(ctx, store.WasmFilter{Network: "public", WasmHash: "h1"})
+		require.NoError(t, err)
+		assert.Equal(t, 1, page.Total)
+
+		page, err = s.ListContractsByWasm(ctx, store.WasmFilter{WasmHash: "h1"})
+		require.NoError(t, err)
+		assert.Equal(t, 2, page.Total, "an empty network means every network")
+	})
+
+	t.Run("deleting a contract removes every version", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h1"), iface("old")))
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h2"), iface("new")))
+		require.NoError(t, s.Save(ctx, contract(idB, "testnet", "h1"), iface("keep")))
+
+		require.NoError(t, s.Delete(ctx, "testnet", idA))
+
+		_, err := s.GetContract(ctx, "testnet", idA)
+		assert.ErrorIs(t, err, store.ErrNotFound)
+		_, err = s.GetSpec(ctx, "testnet", idA, "")
+		assert.ErrorIs(t, err, store.ErrNotFound)
+		_, err = s.ListVersions(ctx, "testnet", idA)
+		assert.ErrorIs(t, err, store.ErrNotFound, "the version history must go with the contract")
+
+		_, err = s.GetContract(ctx, "testnet", idB)
+		require.NoError(t, err, "deleting one contract must not touch another")
+
+		assert.ErrorIs(t, s.Delete(ctx, "testnet", idA), store.ErrNotFound,
+			"deleting an unknown contract reports not found")
+	})
+
+	t.Run("export and import round trip losslessly", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h1"), iface("old")))
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h2"), iface("new")))
+		require.NoError(t, s.Save(ctx, contract(idB, "public", "h3"), iface("other")))
+		require.NoError(t, s.MarkMissing(ctx, "testnet", idA, time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)))
+
+		before, err := s.Export(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, store.SnapshotVersion, before.Version)
+		require.Len(t, before.Contracts, 2)
+
+		for _, cs := range before.Contracts {
+			require.NoError(t, s.Delete(ctx, cs.Contract.Network, cs.Contract.ContractID))
+		}
+		empty, err := s.ListContracts(ctx, store.ListFilter{})
+		require.NoError(t, err)
+		require.Zero(t, empty.Total)
+
+		require.NoError(t, s.Import(ctx, before, false))
+
+		after, err := s.Export(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, before, after, "every contract, version and timestamp must survive the round trip")
+
+		spec, err := s.GetSpec(ctx, "testnet", idA, "h1")
+		require.NoError(t, err)
+		assert.Equal(t, "old", spec.Interface.Functions[0].Name)
+		versions, err := s.ListVersions(ctx, "testnet", idA)
+		require.NoError(t, err)
+		assert.Len(t, versions, 2, "the whole version history must be restored")
+	})
+
+	t.Run("import requires an empty registry unless merging", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h1"), iface("source")))
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h2"), iface("source-v2")))
+		require.NoError(t, s.Save(ctx, contract(idB, "testnet", "h1"), iface("source-b")))
+		snapshot, err := s.Export(ctx)
+		require.NoError(t, err)
+
+		for _, cs := range snapshot.Contracts {
+			require.NoError(t, s.Delete(ctx, cs.Contract.Network, cs.Contract.ContractID))
+		}
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h1"), iface("existing")))
+
+		assert.ErrorIs(t, s.Import(ctx, snapshot, false), store.ErrRegistryNotEmpty)
+
+		require.NoError(t, s.Import(ctx, snapshot, true))
+		got, err := s.GetSpec(ctx, "testnet", idA, "h1")
+		require.NoError(t, err)
+		assert.Equal(t, "existing", got.Interface.Functions[0].Name,
+			"merge must not overwrite a contract that is already present")
+
+		versions, err := s.ListVersions(ctx, "testnet", idA)
+		require.NoError(t, err)
+		assert.Len(t, versions, 2, "merge must add the versions that are missing")
+	})
+
+	t.Run("import rejects an unsupported snapshot version", func(t *testing.T) {
+		s := newStore(t)
+		err := s.Import(context.Background(), &store.Snapshot{Version: store.SnapshotVersion + 1}, false)
+		assert.ErrorContains(t, err, "unsupported snapshot version")
+	})
+
 	t.Run("concurrent saves are safe", func(t *testing.T) {
 		s := newStore(t)
 		ctx := context.Background()
@@ -500,6 +837,100 @@ func runStoreSuite(t *testing.T, newStore factory) {
 		page, err := s.ListContracts(ctx, store.ListFilter{})
 		require.NoError(t, err)
 		assert.Equal(t, workers, page.Total)
+	})
+
+	t.Run("stats count contracts and versions per network", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+
+		empty, err := s.Stats(ctx)
+		require.NoError(t, err)
+		assert.Empty(t, empty.Networks)
+		assert.Zero(t, empty.Contracts)
+		assert.Zero(t, empty.Versions)
+		assert.Nil(t, empty.Latest)
+
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h1"), iface("f")))
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h2"), iface("g")))
+
+		// Sleep so first_seen orders the two registrations unambiguously;
+		// both stores timestamp with the database or wall clock.
+		time.Sleep(5 * time.Millisecond)
+		require.NoError(t, s.Save(ctx, contract(idB, "public", "h3"), iface("f")))
+
+		stats, err := s.Stats(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, 2, stats.Contracts)
+		assert.Equal(t, 3, stats.Versions, "a superseded interface still counts as a stored version")
+
+		require.Len(t, stats.Networks, 2)
+		assert.Equal(t, store.NetworkStats{Network: "public", Contracts: 1, Versions: 1}, stats.Networks[0])
+		assert.Equal(t, store.NetworkStats{Network: "testnet", Contracts: 1, Versions: 2}, stats.Networks[1],
+			"networks are ordered by name")
+
+		require.NotNil(t, stats.Latest)
+		assert.Equal(t, idB, stats.Latest.ContractID,
+			"the most recently registered contract, not the most recently refreshed")
+	})
+
+	t.Run("upgrade feed excludes registrations and pages newest first", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "a1"), iface("f")))
+		time.Sleep(2 * time.Millisecond)
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "a2"), iface("f")))
+		time.Sleep(2 * time.Millisecond)
+		require.NoError(t, s.Save(ctx, contract(idB, "testnet", "b1"), iface("f")))
+		time.Sleep(2 * time.Millisecond)
+		require.NoError(t, s.Save(ctx, contract(idB, "testnet", "b2"), iface("f")))
+		time.Sleep(2 * time.Millisecond)
+		require.NoError(t, s.Save(ctx, contract(idB, "testnet", "b3"), iface("f")))
+
+		page, err := s.ListUpgrades(ctx, store.UpgradeFilter{})
+		require.NoError(t, err)
+		require.Equal(t, 3, page.Total, "each contract's first version is a registration, not an upgrade")
+		require.Len(t, page.Upgrades, 3)
+
+		assert.Equal(t, store.Upgrade{
+			ContractID:  idB,
+			Network:     "testnet",
+			OldWasmHash: "b2",
+			NewWasmHash: "b3",
+			ObservedAt:  page.Upgrades[0].ObservedAt,
+		}, page.Upgrades[0])
+		assert.Equal(t, idB, page.Upgrades[1].ContractID)
+		assert.Equal(t, idA, page.Upgrades[2].ContractID, "a2 is the oldest upgrade")
+
+		first, err := s.ListUpgrades(ctx, store.UpgradeFilter{Limit: 1})
+		require.NoError(t, err)
+		require.Len(t, first.Upgrades, 1)
+		assert.Equal(t, 3, first.Total)
+		assert.Equal(t, "b3", first.Upgrades[0].NewWasmHash)
+
+		second, err := s.ListUpgrades(ctx, store.UpgradeFilter{Limit: 1, Offset: 1})
+		require.NoError(t, err)
+		require.Len(t, second.Upgrades, 1)
+		assert.Equal(t, "b2", second.Upgrades[0].NewWasmHash)
+
+		past, err := s.ListUpgrades(ctx, store.UpgradeFilter{Offset: 99})
+		require.NoError(t, err)
+		assert.Empty(t, past.Upgrades)
+		assert.Equal(t, 3, past.Total, "paging past the end still reports the true total")
+
+		public, err := s.ListUpgrades(ctx, store.UpgradeFilter{Network: "public"})
+		require.NoError(t, err)
+		assert.Zero(t, public.Total)
+		assert.Empty(t, public.Upgrades)
+
+		require.NoError(t, s.Save(ctx, contract(idA, "public", "p1"), iface("f")))
+		require.NoError(t, s.Save(ctx, contract(idA, "public", "p2"), iface("f")))
+
+		public, err = s.ListUpgrades(ctx, store.UpgradeFilter{Network: "public"})
+		require.NoError(t, err)
+		require.Equal(t, 1, public.Total)
+		assert.Equal(t, "p1", public.Upgrades[0].OldWasmHash)
+		assert.Equal(t, "p2", public.Upgrades[0].NewWasmHash)
 	})
 }
 
