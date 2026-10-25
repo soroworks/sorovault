@@ -1,4 +1,4 @@
-# SoroVault
+#SoroVault
 
 [![CI](https://github.com/soroworks/sorovault/actions/workflows/ci.yml/badge.svg)](https://github.com/soroworks/sorovault/actions/workflows/ci.yml)
 [![Security](https://github.com/soroworks/sorovault/actions/workflows/security.yml/badge.svg)](https://github.com/soroworks/sorovault/actions/workflows/security.yml)
@@ -18,7 +18,7 @@ for where contributions are most welcome.
 
 ---
 
-## Why
+# # Why
 
 A deployed Soroban contract is a black box unless you have its interface.
 
@@ -43,7 +43,7 @@ $ curl -s localhost:8080/api/contracts/CDZZ…4PAN | jq '.interface.functions[].
 It is the discovery layer for contract interfaces, and the natural companion to
 a deployer (SoroForge) and a simulator (SoroProbe).
 
-## What it does
+##What it does
 
 - **Register** a contract by ID — fetch its WASM, decode the interface, store it
 - **Search** the registry by contract ID or name
@@ -84,8 +84,15 @@ Worth writing down, because it is the part that is easy to get wrong:
    contract's `ScAddress`, the key `ScvLedgerKeyContractInstance`, and
    `Persistent` durability. `getLedgerEntries` returns a `ContractDataEntry`
    whose `Val.Instance.Executable.WasmHash` names the module.
-   - A Stellar asset contract has no `WasmHash` — it is built into the host, so
-     there is no interface to decode. SoroVault reports this distinctly.
+   - A Stellar Asset Contract has no `WasmHash` — it is built into the host, so
+     there is no uploaded interface to decode. SoroVault recognizes the on-ledger
+     `CONTRACT_EXECUTABLE_STELLAR_ASSET` discriminant and serves the documented
+     built-in interface under the stable identifier
+     `builtin:stellar-asset-contract:v1`. Its interface JSON is marked
+     `builtin: true` and cites the [official SAC specification](https://developers.stellar.org/docs/tokens/stellar-asset-contract).
+     Registering an SAC now returns its interface instead of the previous HTTP
+     422 response; `wasm_hash` is omitted from the contract interface response
+     and `interface_id` identifies the built-in definition.
 2. **Contract code.** Build a `LedgerKey` for `ContractCode` keyed by that hash.
    `getLedgerEntries` returns a `ContractCodeEntry` holding the module bytes.
    The hash is the SHA-256 of the module, which is what makes it a usable
@@ -231,6 +238,11 @@ within the interval. An upgraded contract gets a new interface version
 exactly as `POST /api/contracts/{id}/refresh` would record it; an unchanged
 one costs a single `getLedgerEntries` call and is not re-downloaded. Refreshes
 are spread at even offsets across the interval to avoid an RPC traffic burst.
+
+A rate-limited RPC response pauses the sweep and retries that contract with
+exponential backoff, capped at 16 seconds. After five retries, the sweep stops
+and leaves remaining contracts stale for the next scheduled sweep; the rate
+limit is logged once rather than once per contract.
 
 A contract that fails to refresh — expired, or an RPC error — is logged and
 skipped, and the sweep carries on. One sweep runs at startup and then one per
@@ -543,13 +555,14 @@ beside it.
 ## CLI
 
 ```console
-sorovault add <contract_id>...      # fetch, decode and register
+sorovault add <contract_id>...      # fetch, decode and register (--from-file)
 sorovault remove <contract_id>      # delete a contract and its versions (--yes)
-sorovault refresh <contract_id>...  # re-check for an upgraded interface
+sorovault refresh <contract_id>...  # re-check for an upgraded interface (--from-file)
 sorovault refresh --all             # one sweep over every contract (--json)
 sorovault list                      # -q, --function, --type, --network, --limit, --offset
 sorovault get <contract_id>         # --function, --wasm-hash, --json
 sorovault versions <contract_id>    # --network, --json
+sorovault codegen <contract_id>     # --lang ts|md|examples; -o, --wasm-hash, --package, --zod
 sorovault codegen <contract_id>     # --lang ts|md|examples; -o, --wasm-hash, --package
 sorovault check-client <client.ts>  # --contract, --api, --network; exits non-zero when stale
 sorovault export [file]             # versioned JSON backup (-o)
@@ -561,7 +574,9 @@ sorovault doctor                    # check a deployment's health
 ```
 
 `add` and `refresh` accept several contract IDs and report per-contract
-failures without abandoning the rest. `list` takes `--function` and `--type`
+failures without abandoning the rest. Both accept `--from-file path` to read
+additional IDs, one per line; blank lines and lines beginning with `#` are
+ignored, and `--from-file -` reads standard input. `list` takes `--function` and `--type`
 for the same exact-name filters the API offers. Every read command takes
 `--json`, which emits exactly what the API serves:
 
@@ -733,6 +748,29 @@ Type mappings follow the Stellar CLI's own bindings (`u64`→`bigint`,
 the SDK unchanged. It requires `@stellar/stellar-sdk` 14 or later and
 `buffer`.
 
+### Runtime validation
+
+TypeScript types disappear at compile time, but a frontend taking user input
+before building a transaction can validate against the same shapes at
+runtime with `--zod` (or `client.ts?zod=1` over the API). The generated file
+gains a schemas section — one Zod schema per struct, union and enum, plus
+one per function's argument list — with the widths enforced exactly:
+integer bounds at each kind's limits and exact byte lengths for
+`BytesN<N>`:
+
+```ts
+import { voteArgsSchema } from "./zkvote";
+
+const args = voteArgsSchema.parse(JSON.parse(input)); // throws before anything ships
+const tx = await client.vote(args);
+```
+
+A schema for a user-defined type references the others through `z.lazy`, so
+recursive interfaces stay legal, and the section compiles standalone: with
+`--zod` the file imports `zod` itself, and a package generated with
+`--package --zod` pins `zod` as a peer dependency at the same version CI
+type-checks the golden validators against.
+
 ### Staleness checks
 
 Every generated file embeds the interface version it was built from: the
@@ -756,6 +794,7 @@ if (!assertSameWasm(meta.wasm_hash)) {
 Checking is opt-in: nothing happens unless the application calls it, so
 offline use stays untouched, and a project that commits its client keeps it
 byte-identical until the interface actually changes.
+
 ### Checking a committed client for staleness
 
 Generated clients embed the WASM hash they were built for as the `wasmHash`
@@ -825,9 +864,17 @@ selectable text.
 
 `POST /api/wasm/{hash}` catalogs uploaded code by its 64-character SHA-256
 hash, even before a contract instance uses it. Its decoded interface is then
-available from `GET /api/wasm/{hash}`. Attach a contract repository URL and an
-optional 40- or 64-character commit hash with `PUT /api/contracts/{id}/source`;
-the browse page displays the repository and commit with the interface.
+available from `GET /api/wasm/{hash}`. To see what a module would expose
+before it is ever deployed — a doc comment that should have rendered, a type
+that should have changed — `POST /api/decode` with the file as the request
+body (raw or as a `multipart/form-data` file) answers with the ABI JSON and
+stores nothing; `?format=ts` returns the generated TypeScript client
+instead. The body is limited to 512 KiB, four times the 128 KiB the network
+allows as contract code.
+
+Attach a contract repository URL and an optional 40- or 64-character commit
+hash with `PUT /api/contracts/{id}/source`; the browse page displays the
+repository and commit with the interface.
 
 ## The ABI JSON
 

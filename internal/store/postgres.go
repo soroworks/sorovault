@@ -902,8 +902,15 @@ func (p *Postgres) ListVersions(ctx context.Context, network, contractID string)
 	versions := []SpecVersion{}
 	for rows.Next() {
 		var v SpecVersion
-		if err := rows.Scan(&v.WasmHash, &v.DecodedAt, &v.Current, &v.ObservedLedger); err != nil {
+		var versionID string
+		if err := rows.Scan(&versionID, &v.DecodedAt, &v.Current, &v.ObservedLedger); err != nil {
 			return nil, fmt.Errorf("store: scanning version: %w", err)
+		}
+		if versionID == model.StellarAssetContractIdentifier {
+			v.InterfaceID = versionID
+			v.Builtin = true
+		} else {
+			v.WasmHash = versionID
 		}
 		versions = append(versions, v)
 	}
