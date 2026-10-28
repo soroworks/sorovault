@@ -170,6 +170,47 @@ jobs:
         working-directory: internal/codegen/testdata/zkvote-pkg
         run: npm install --no-audit --no-fund && npm run build
 
+  # The Go tests prove the generated Go and Python clients are stable;
+  # this proves the checked-in goldens match the generators and that the
+  # Go one compiles against the SDK it targets.
+  codegen-gotypecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          check-latest: true
+      - name: Fail if regeneration changed the checked-in goldens
+        run: |
+          go test ./internal/codegen -run 'TestGoldenGoClient|TestGoldenPythonClient' -update
+          git diff --exit-code internal/codegen/testdata/zkvote.client.go internal/codegen/testdata/zkvote.client.py
+      - name: Type-check the golden Go client
+        run: |
+          mkdir -p zztypecheck
+          cp internal/codegen/testdata/zkvote.client.go zztypecheck/client.go
+          go build ./zztypecheck
+
+  # Generating Python is one thing; proving the file imports against the
+  # SDK it targets is another.
+  codegen-pytypecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          check-latest: true
+      - name: Install the SDK
+        run: python3 -m pip install --user stellar-sdk
+      - name: Import the golden Python client
+        run: |
+          mkdir -p zztypecheck
+          cp internal/codegen/testdata/zkvote.client.py zztypecheck/client.py
+          python3 -c "import zztypecheck.client as c; assert c.CONTRACT_ID; assert c.Client"
+
   helm:
     runs-on: ubuntu-latest
     steps:

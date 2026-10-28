@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/soroworks/sorovault/internal/attest"
@@ -242,12 +243,13 @@ func requestLogger(log *slog.Logger) func(http.Handler) http.Handler {
 			defer func() {
 				attrs := []any{
 					"method", r.Method,
-					"path", r.URL.Path,
+					"route", routePattern(r),
 					"status", ww.Status(),
 					"bytes", ww.BytesWritten(),
 					"duration", time.Since(start),
 					"request_id", middleware.GetReqID(r.Context()),
 				}
+
 				if ww.Status() >= http.StatusInternalServerError {
 					log.ErrorContext(r.Context(), "request", attrs...)
 					return
@@ -258,6 +260,27 @@ func requestLogger(log *slog.Logger) func(http.Handler) http.Handler {
 			next.ServeHTTP(ww, r)
 		})
 	}
+}
+
+// routePattern is the route a request matched, as the router wrote it —
+// /api/contracts/{id} — rather than the raw path.
+//
+// The raw path of a registration is a contract ID, which makes every line
+// about a different contract: a log line would name a specific registration
+// instead of the endpoint that served it, and the request log would grow
+// without bound. The route pattern names the endpoint, so lines stay
+// countable and no identifier is recorded.
+//
+// chi only fills the pattern in once routing has run, so this is read after
+// next.ServeHTTP. When nothing matched at all — the request never reached a
+// router — the pattern is empty and the raw path is all there is to say.
+// chi still reports the mount pattern for a path under /api that matched no
+// route, which keeps even those lines free of identifiers.
+func routePattern(r *http.Request) string {
+	if pattern := chi.RouteContext(r.Context()).RoutePattern(); pattern != "" {
+		return pattern
+	}
+	return r.URL.Path
 }
 
 // originResponse is a contract's provenance, labelled so a client cannot

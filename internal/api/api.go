@@ -135,7 +135,7 @@ func (s *Server) Routes() chi.Router {
 	r.Get("/wasm/{hash}", s.getWasmSpec)
 	r.Post("/wasm/{hash}", s.write(s.catalogWasm))
 	r.Get("/wasm/{hash}/contracts", s.listWasmContracts)
-	r.Get("/contracts/{id}", s.getContract)
+	r.Get("/contracts/{id}", cacheable(s.getContract))
 	r.Put("/contracts/{id}/source", s.write(s.updateContractSource))
 	r.Post("/contracts/{id}/verify", s.write(s.verifyPublisher))
 	r.Put("/contracts/{id}/deprecation", s.write(s.setContractDeprecation))
@@ -144,10 +144,12 @@ func (s *Server) Routes() chi.Router {
 	r.Get("/contracts/{id}/versions", s.listVersions)
 	r.Get("/contracts/{id}/functions", s.listFunctions)
 	r.Get("/contracts/{id}/events", s.listEvents)
-	r.Get("/contracts/{id}/functions/{fn}", s.getFunction)
+	r.Get("/contracts/{id}/functions/{fn}", cacheable(s.getFunction))
 	r.Get("/contracts/{id}/functions/{fn}/schema.json", s.getFunctionSchema)
 	r.Get("/contracts/{id}/functions/{fn}/example.json", s.getFunctionExample)
-	r.Get("/contracts/{id}/client.ts", s.getTypeScriptClient)
+	r.Get("/contracts/{id}/client.ts", cacheable(s.getTypeScriptClient))
+	r.Get("/contracts/{id}/client.go", cacheable(s.getGoClient))
+	r.Get("/contracts/{id}/client.py", cacheable(s.getPythonClient))
 	r.Get("/keys", s.getKeys)
 	r.Get("/stats", s.getStats)
 	r.Get("/upgrades", s.listUpgrades)
@@ -705,6 +707,154 @@ func (s *Server) getTypeScriptClient(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", `attachment; filename="`+contractID+`.client.ts"`)
 	}
 	_, _ = w.Write([]byte(source)) //nolint:gosec // generated TypeScript, served as text/plain with nosniff
+}
+
+// getGoClient serves GET /api/contracts/{id}/client.go: a typed Go client
+// for the contract's current interface, or an older one with ?wasm_hash=.
+// ?pkg= names the generated package (default "contract"); ?download=1 asks
+// the browser to save it.
+func (s *Server) getGoClient(w http.ResponseWriter, r *http.Request) {
+	contractID := chi.URLParam(r, "id")
+
+	network, err := s.network(r)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+
+	wasmHash := strings.TrimSpace(r.URL.Query().Get("wasm_hash"))
+	stored, err := s.reg.Store().GetSpec(r.Context(), network, contractID, wasmHash)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+
+	source, err := codegen.Go(stored.Interface, codegen.Source{
+		ContractID: stored.ContractID,
+		Network:    stored.Network,
+		WasmHash:   stored.WasmHash,
+	}, strings.TrimSpace(r.URL.Query().Get("pkg")))
+	if err != nil {
+		// The interface decoded, but cannot be expressed as Go —
+		// a property of the contract, not a server fault.
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if r.URL.Query().Get("download") != "" {
+		w.Header().Set("Content-Disposition", `attachment; filename="`+contractID+`.client.go"`)
+	}
+	_, _ = w.Write([]byte(source)) //nolint:gosec // generated Go, served as text/plain with nosniff
+}
+
+// getPythonClient serves GET /api/contracts/{id}/client.py: a typed Python
+// client for the contract's current interface, or an older one with
+// ?wasm_hash=. ?download=1 asks the browser to save it.
+func (s *Server) getPythonClient(w http.ResponseWriter, r *http.Request) {
+	contractID := chi.URLParam(r, "id")
+
+	network, err := s.network(r)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+
+	wasmHash := strings.TrimSpace(r.URL.Query().Get("wasm_hash"))
+	stored, err := s.reg.Store().GetSpec(r.Context(), network, contractID, wasmHash)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+
+	source, err := codegen.Python(stored.Interface, codegen.Source{
+		ContractID: stored.ContractID,
+		Network:    stored.Network,
+		WasmHash:   stored.WasmHash,
+	})
+	if err != nil {
+		// The interface decoded, but cannot be expressed as Python —
+		// a property of the contract, not a server fault.
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if r.URL.Query().Get("download") != "" {
+		w.Header().Set("Content-Disposition", `attachment; filename="`+contractID+`.client.py"`)
+	}
+	_, _ = w.Write([]byte(source)) //nolint:gosec // generated Python, served as text/plain with nosniff
+}
+
+// cacheLifetime is how long a response pinned by ?wasm_hash= may be reused
+// without asking again. A year is the practical maximum for a public
+// resource; the version behind such a response cannot change, because the
+// hash is the SHA-256 of the module that produced it.
+const cacheLifetime = 31536000 // one year, in seconds
+
+// cacheable gives a handler's 200 responses an ETag and the Cache-Control
+// that matches how stable they are, and answers a matching If-None-Match
+// with 304 Not Modified and no body.
+//
+// The ETag is a hash of the encoded body rather than of the WASM hash alone,
+// because the body also carries what SoroVault itself contributes: the ABI
+// version it decoded with, the generator behind client.ts, and the source
+// fields a later edit can change. Hashing the body means every one of those
+// invalidates the cached copy on its own, with no version constant for a
+// future change to be forgotten.
+//
+// The stability comes from the request. ?wasm_hash= names a version, and a
+// version is immutable, so the answer may sit in a cache for a year. Without
+// it the response describes "current", which moves when the contract is
+// upgraded, so the client must revalidate: no-cache means the cached body is
+// never used without a round trip, but a 304 still spares the transfer.
+//
+// Anything that is not a 200 passes straight through. An error body names a
+// problem that may be gone on the next request, and must not be remembered.
+func cacheable(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		buffer := newResponseBuffer()
+		next(buffer, r)
+
+		if buffer.status != http.StatusOK {
+			buffer.writeTo(w)
+			return
+		}
+
+		sum := sha256.Sum256(buffer.body.Bytes())
+		etag := `"` + hex.EncodeToString(sum[:]) + `"`
+
+		cacheControl := "no-cache" // "current" moves; revalidate before use
+		if strings.TrimSpace(r.URL.Query().Get("wasm_hash")) != "" {
+			cacheControl = fmt.Sprintf("public, max-age=%d, immutable", cacheLifetime)
+		}
+
+		w.Header().Set("ETag", etag)
+		w.Header().Set("Cache-Control", cacheControl)
+
+		if etagMatches(r.Header.Get("If-None-Match"), etag) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+
+		buffer.writeTo(w)
+	}
+}
+
+// etagMatches reports whether an If-None-Match header names etag. The header
+// carries a comma-separated list, may wrap each tag in W/ for a weak
+// comparison, and may be * to match anything; If-None-Match compares
+// weakly, so a W/ prefix does not stop a match.
+func etagMatches(header, etag string) bool {
+	for _, candidate := range strings.Split(header, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" || strings.TrimPrefix(candidate, "W/") == etag {
+			return true
+		}
+	}
+	return false
 }
 
 // minCompressBytes is the size below which the extra encoding work and

@@ -138,6 +138,12 @@ type response struct {
 }
 
 func (h *harness) do(t *testing.T, method, path, body string) (*response, []byte) {
+	return h.doWith(t, method, path, body, "", "")
+}
+
+// doWith issues a request carrying one extra header, which is how a client
+// asks whether what it already cached is still current.
+func (h *harness) doWith(t *testing.T, method, path, body, header, value string) (*response, []byte) {
 	t.Helper()
 
 	var reader io.Reader
@@ -149,6 +155,9 @@ func (h *harness) do(t *testing.T, method, path, body string) (*response, []byte
 	require.NoError(t, err)
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if header != "" {
+		req.Header.Set(header, value)
 	}
 
 	resp, err := h.server.Client().Do(req)
@@ -1321,6 +1330,71 @@ func TestTypeScriptClient(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
+// TestGoClient checks the generated Go client: the source, the package
+// name it is generated under, and the download variant.
+func TestGoClient(t *testing.T) {
+	t.Parallel()
+
+	module, err := os.ReadFile("../spec/testdata/zkvote.wasm")
+	require.NoError(t, err)
+
+	h := newHarness(t)
+	h.fake.Deploy(idA, module)
+	resp, raw := h.do(t, http.MethodPost, "/api/contracts", `{"contract_id":"`+idA+`"}`)
+	require.Equal(t, http.StatusCreated, resp.StatusCode, string(raw))
+
+	resp, raw = h.do(t, http.MethodGet, "/api/contracts/"+idA+"/client.go?pkg=zkvote", "")
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(raw))
+	assert.Contains(t, resp.Header.Get("Content-Type"), "text/plain")
+	assert.Empty(t, resp.Header.Get("Content-Disposition"))
+
+	body := string(raw)
+	assert.Contains(t, body, "package zkvote")
+	assert.Contains(t, body, "const ContractID = \""+idA+"\"")
+	assert.Contains(t, body, "func (client *Client) ")
+
+	// Without ?pkg= the package name falls back to contract.
+	resp, raw = h.do(t, http.MethodGet, "/api/contracts/"+idA+"/client.go", "")
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(raw))
+	assert.Contains(t, string(raw), "package contract\n")
+
+	resp, _ = h.do(t, http.MethodGet, "/api/contracts/"+idA+"/client.go?download=1", "")
+	assert.Equal(t, `attachment; filename="`+idA+`.client.go"`, resp.Header.Get("Content-Disposition"))
+
+	resp, _ = h.do(t, http.MethodGet, "/api/contracts/"+idB+"/client.go", "")
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// TestPythonClient checks the generated Python client: the source, the
+// download variant, and that the package clause reads as Python.
+func TestPythonClient(t *testing.T) {
+	t.Parallel()
+
+	module, err := os.ReadFile("../spec/testdata/zkvote.wasm")
+	require.NoError(t, err)
+
+	h := newHarness(t)
+	h.fake.Deploy(idA, module)
+	resp, raw := h.do(t, http.MethodPost, "/api/contracts", `{"contract_id":"`+idA+`"}`)
+	require.Equal(t, http.StatusCreated, resp.StatusCode, string(raw))
+
+	resp, raw = h.do(t, http.MethodGet, "/api/contracts/"+idA+"/client.py", "")
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(raw))
+	assert.Contains(t, resp.Header.Get("Content-Type"), "text/plain")
+	assert.Empty(t, resp.Header.Get("Content-Disposition"))
+
+	body := string(raw)
+	assert.Contains(t, body, `CONTRACT_ID = "`+idA+`"`)
+	assert.Contains(t, body, "class Client:")
+	assert.Contains(t, body, "def vote(self, voter: str")
+
+	resp, _ = h.do(t, http.MethodGet, "/api/contracts/"+idA+"/client.py?download=1", "")
+	assert.Equal(t, `attachment; filename="`+idA+`.client.py"`, resp.Header.Get("Content-Disposition"))
+
+	resp, _ = h.do(t, http.MethodGet, "/api/contracts/"+idB+"/client.py", "")
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
 // TestInternalErrorsAreNotLeaked checks that an unexpected store failure
 // produces a generic 500 rather than exposing internals to the caller.
 func TestInternalErrorsAreNotLeaked(t *testing.T) {
@@ -1369,6 +1443,153 @@ type databaseDownError struct{}
 
 func (*databaseDownError) Error() string {
 	return "dial tcp: connection string postgres://user:hunter2@db/registry refused"
+}
+
+// registerZKVote deploys and registers the real testnet fixture the codegen
+// and ABI tests use, so the caching tests exercise a contract with a
+// non-trivial interface.
+func registerZKVote(t *testing.T, h *harness) []byte {
+	t.Helper()
+
+	module, err := os.ReadFile("../spec/testdata/zkvote.wasm")
+	require.NoError(t, err)
+
+	h.fake.Deploy(idA, module)
+	resp, raw := h.do(t, http.MethodPost, "/api/contracts", `{"contract_id":"`+idA+`"}`)
+	require.Equal(t, http.StatusCreated, resp.StatusCode, string(raw))
+	return module
+}
+
+// immutableCache is the Cache-Control a response pinned by ?wasm_hash= must
+// carry: a year, and never revalidated while it lasts.
+const immutableCache = "public, max-age=31536000, immutable"
+
+// TestVersionedResponsesAreImmutable covers the half of #12 that can never
+// change: an interface selected by ?wasm_hash= names a version, and a
+// version is fixed by the SHA-256 of its module, so a client may hold the
+// answer for a year without asking again.
+func TestVersionedResponsesAreImmutable(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	module := registerZKVote(t, h)
+	hash := stellartest.HashOf(module)
+	pinned := "/api/contracts/" + idA + "?wasm_hash=" + hash
+
+	resp, raw := h.do(t, http.MethodGet, pinned, "")
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(raw))
+	etag := resp.Header.Get("ETag")
+	require.NotEmpty(t, etag, "a cacheable response must carry an ETag")
+	assert.Equal(t, immutableCache, resp.Header.Get("Cache-Control"))
+
+	t.Run("a matching If-None-Match is a 304 with no body", func(t *testing.T) {
+		resp, raw := h.doWith(t, http.MethodGet, pinned, "", "If-None-Match", etag)
+		assert.Equal(t, http.StatusNotModified, resp.StatusCode)
+		assert.Empty(t, raw, "304 must not resend the interface")
+		assert.Equal(t, etag, resp.Header.Get("ETag"), "304 restates the tag it honoured")
+		assert.Equal(t, immutableCache, resp.Header.Get("Cache-Control"))
+	})
+
+	t.Run("If-None-Match compares weakly and accepts a list", func(t *testing.T) {
+		resp, raw := h.doWith(t, http.MethodGet, pinned, "", "If-None-Match", `W/`+etag+`, "other"`)
+		assert.Equal(t, http.StatusNotModified, resp.StatusCode, string(raw))
+
+		resp, raw = h.doWith(t, http.MethodGet, pinned, "", "If-None-Match", "*")
+		assert.Equal(t, http.StatusNotModified, resp.StatusCode, string(raw))
+	})
+
+	t.Run("a stale tag gets the full response", func(t *testing.T) {
+		resp, raw := h.doWith(t, http.MethodGet, pinned, "", "If-None-Match", `"gone"`)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.NotEmpty(t, raw)
+	})
+
+	t.Run("the three versioned handlers all carry the headers", func(t *testing.T) {
+		for _, path := range []string{
+			"/api/contracts/" + idA + "?wasm_hash=" + hash,
+			"/api/contracts/" + idA + "/functions/vote?wasm_hash=" + hash,
+			"/api/contracts/" + idA + "/client.ts?wasm_hash=" + hash,
+		} {
+			resp, raw := h.do(t, http.MethodGet, path, "")
+			require.Equal(t, http.StatusOK, resp.StatusCode, "%s: %s", path, raw)
+			assert.NotEmpty(t, resp.Header.Get("ETag"), path)
+			assert.Equal(t, immutableCache, resp.Header.Get("Cache-Control"), path)
+		}
+	})
+}
+
+// TestCurrentResponsesRevalidate covers the other half of #12: without
+// ?wasm_hash= the answer describes "current", which moves when the contract
+// is upgraded, so it is revalidated rather than reused from a cache — and
+// the ETag moves with it.
+func TestCurrentResponsesRevalidate(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	registerZKVote(t, h)
+
+	resp, raw := h.do(t, http.MethodGet, "/api/contracts/"+idA, "")
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(raw))
+	before := resp.Header.Get("ETag")
+	require.NotEmpty(t, before)
+	assert.Equal(t, "no-cache", resp.Header.Get("Cache-Control"),
+		"current may move, so a cache must revalidate before reusing it")
+
+	resp, raw = h.doWith(t, http.MethodGet, "/api/contracts/"+idA, "", "If-None-Match", before)
+	assert.Equal(t, http.StatusNotModified, resp.StatusCode)
+	assert.Empty(t, raw)
+
+	// An upgrade is exactly the change "current" has to be revalidated for:
+	// the body now describes the new version, so the tag must move with it.
+	h.fake.Upgrade(idA, moduleWith(t, "v2"))
+	resp, raw = h.do(t, http.MethodPost, "/api/contracts/"+idA+"/refresh", "")
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(raw))
+
+	resp, raw = h.do(t, http.MethodGet, "/api/contracts/"+idA, "")
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(raw))
+	after := resp.Header.Get("ETag")
+	require.NotEmpty(t, after)
+	assert.NotEqual(t, before, after, "the ETag must change when the body does")
+
+	// The tag the client still holds no longer matches, so it is served the
+	// new body rather than a 304 for a body that is gone.
+	resp, raw = h.doWith(t, http.MethodGet, "/api/contracts/"+idA, "", "If-None-Match", before)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.NotEmpty(t, raw)
+
+	for _, path := range []string{
+		"/api/contracts/" + idA + "/functions/v2",
+		"/api/contracts/" + idA + "/client.ts",
+	} {
+		resp, raw := h.do(t, http.MethodGet, path, "")
+		require.Equal(t, http.StatusOK, resp.StatusCode, "%s: %s", path, raw)
+		assert.NotEmpty(t, resp.Header.Get("ETag"), path)
+		assert.Equal(t, "no-cache", resp.Header.Get("Cache-Control"), path)
+	}
+}
+
+// TestUncacheableResponsesStayUncached pins what the caching wrapper must
+// not touch: listings change with every registration, and errors describe a
+// moment that may already be past, so neither is worth an ETag.
+func TestUncacheableResponsesStayUncached(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	registerZKVote(t, h)
+
+	for _, path := range []string{
+		"/api/contracts",
+		"/api/contracts/" + idB, // 404: nothing to remember
+	} {
+		resp, raw := h.do(t, http.MethodGet, path, "")
+		if path == "/api/contracts" {
+			require.Equal(t, http.StatusOK, resp.StatusCode, string(raw))
+		} else {
+			require.Equal(t, http.StatusNotFound, resp.StatusCode, string(raw))
+		}
+		assert.Empty(t, resp.Header.Get("ETag"), path)
+		assert.Empty(t, resp.Header.Get("Cache-Control"), path)
+	}
 }
 
 func TestRegisterStellarAssetContract(t *testing.T) {

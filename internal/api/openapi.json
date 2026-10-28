@@ -169,6 +169,7 @@
     "/api/contracts/{id}": {
       "get": {
         "summary": "A contract's decoded interface",
+        "description": "Carries an `ETag` over the encoded body. With `wasm_hash` the version named is immutable, so the response is `public, max-age=31536000, immutable`; without it the response describes the current version and is `no-cache`, revalidated on every use. `If-None-Match` with the current tag returns 304.",
         "operationId": "getContract",
         "parameters": [
           { "$ref": "#/components/parameters/id" },
@@ -178,6 +179,7 @@
         ],
         "responses": {
           "200": { "description": "The interface. When the registry signs, the response carries `X-SoroVault-Attestation` and `X-SoroVault-Key-Id` headers.", "headers": { "X-SoroVault-Attestation": { "$ref": "#/components/headers/Attestation" }, "X-SoroVault-Key-Id": { "$ref": "#/components/headers/KeyId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ContractInterface" }, "examples": { "zkvote": { "$ref": "#/components/examples/ContractInterface" } } } } },
+          "304": { "$ref": "#/components/responses/NotModified" },
           "404": { "$ref": "#/components/responses/NotFound" }
         }
       }
@@ -312,6 +314,7 @@
     "/api/contracts/{id}/functions/{fn}": {
       "get": {
         "summary": "One function in detail",
+        "description": "Carries an `ETag` over the encoded body, and is cached the way the contract document is: immutable when `wasm_hash` pins a version, `no-cache` for the current one.",
         "operationId": "getFunction",
         "parameters": [
           { "$ref": "#/components/parameters/id" },
@@ -321,6 +324,7 @@
         ],
         "responses": {
           "200": { "description": "The function.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/FunctionDetail" }, "examples": { "hasVoted": { "$ref": "#/components/examples/FunctionDetail" } } } } },
+          "304": { "$ref": "#/components/responses/NotModified" },
           "404": { "$ref": "#/components/responses/NotFound" }
         }
       }
@@ -421,7 +425,7 @@
     "/api/contracts/{id}/client.ts": {
       "get": {
         "summary": "A typed TypeScript client",
-        "description": "Generated from the stored interface; builds on @stellar/stellar-sdk >= 14. The file embeds the WASM hash it was generated for as the wasmHash export and exposes assertSameWasm(liveHash) to warn on a mismatch; the check is opt-in.",
+        "description": "Generated from the stored interface; builds on @stellar/stellar-sdk >= 14. The file embeds the WASM hash it was generated for as the wasmHash export and exposes assertSameWasm(liveHash) to warn on a mismatch; the check is opt-in. Carries an `ETag` over the generated source, so a generator upgrade invalidates what clients hold: immutable when `wasm_hash` pins a version, `no-cache` for the current one.",
         "operationId": "getTypeScriptClient",
         "parameters": [
           { "$ref": "#/components/parameters/id" },
@@ -432,6 +436,46 @@
         ],
         "responses": {
           "200": { "description": "TypeScript source.", "content": { "text/plain": { "schema": { "type": "string" }, "example": "export const contractId = \\\"CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN\\\";\\nexport const wasmHash = \\\"c618dae264864ccf446a3c7db27da80c7c83e840131242cc2fe9cd32a2a20781\\\";\\n" } } },
+          "304": { "$ref": "#/components/responses/NotModified" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/NoInterface" }
+        }
+      }
+    },
+    "/api/contracts/{id}/client.go": {
+      "get": {
+        "summary": "A typed Go client",
+        "description": "Generated from the stored interface; builds on github.com/stellar/go-stellar-sdk. Carries an `ETag` over the generated source, so a generator upgrade invalidates what clients hold: immutable when `wasm_hash` pins a version, `no-cache` for the current one.",
+        "operationId": "getGoClient",
+        "parameters": [
+          { "$ref": "#/components/parameters/id" },
+          { "$ref": "#/components/parameters/network" },
+          { "$ref": "#/components/parameters/wasmHash" },
+          { "name": "pkg", "in": "query", "description": "Package name for the generated file; sanitized to a legal Go identifier, default contract.", "schema": { "type": "string" } },
+          { "name": "download", "in": "query", "description": "Any value sets Content-Disposition: attachment.", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Go source.", "content": { "text/plain": { "schema": { "type": "string" }, "example": "package zkvote\\n\\n// ContractID is the contract every method invokes.\\nconst ContractID = \\\"CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN\\\"\\n" } } },
+          "304": { "$ref": "#/components/responses/NotModified" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/NoInterface" }
+        }
+      }
+    },
+    "/api/contracts/{id}/client.py": {
+      "get": {
+        "summary": "A typed Python client",
+        "description": "Generated from the stored interface; builds on stellar-sdk. Carries an `ETag` over the generated source, so a generator upgrade invalidates what clients hold: immutable when `wasm_hash` pins a version, `no-cache` for the current one.",
+        "operationId": "getPythonClient",
+        "parameters": [
+          { "$ref": "#/components/parameters/id" },
+          { "$ref": "#/components/parameters/network" },
+          { "$ref": "#/components/parameters/wasmHash" },
+          { "name": "download", "in": "query", "description": "Any value sets Content-Disposition: attachment.", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Python source.", "content": { "text/plain": { "schema": { "type": "string" }, "example": "CONTRACT_ID = \\\"CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN\\\"\\nNETWORK = \\\"testnet\\\"\\n" } } },
+          "304": { "$ref": "#/components/responses/NotModified" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "422": { "$ref": "#/components/responses/NoInterface" }
         }
@@ -505,6 +549,13 @@
     },
     "responses": {
       "BadRequest": { "description": "Malformed input, such as an invalid contract ID.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "NotModified": {
+        "description": "The client's cached copy is still current: `If-None-Match` carried the response's `ETag`, so the body is omitted. The `ETag` and `Cache-Control` headers are repeated here as they were on the 200.",
+        "headers": {
+          "ETag": { "description": "The entity tag that was matched.", "schema": { "type": "string" } },
+          "Cache-Control": { "description": "`public, max-age=31536000, immutable` when the request pinned a version with wasm_hash; `no-cache` for the current version, which moves when the contract is upgraded.", "schema": { "type": "string" } }
+        }
+      },
       "NotFound": { "description": "No such contract, version or function.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
       "NoInterface": { "description": "The contract exists but has no interface to serve: a Stellar asset contract, or a module without a contractspecv0 section.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
       "TooManyRequests": {
@@ -533,6 +584,7 @@
         ],
         "contracts": 60,
         "versions": 80,
+        "read_only": false,
         "latest_contract": {
           "contract_id": "CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN",
           "network": "testnet",
@@ -607,6 +659,8 @@
         "first_seen": "2026-08-07T12:00:00Z",
         "decoded_at": "2026-08-07T12:00:00Z",
         "current": true,
+        "implements": [],
+        "origin": { "known": false },
         "interface": {
           "abi_version": "1",
           "functions": [{ "name": "has_voted", "inputs": [{ "name": "nullifier", "type": { "kind": "bytes_n", "display": "BytesN<32>", "n": 32 } }], "outputs": [{ "kind": "bool", "display": "bool" }] }],
