@@ -93,6 +93,7 @@ func (s *Server) Routes() chi.Router {
 	r.Use(securityHeaders)
 
 	r.Get("/", s.index)
+	r.Get("/upgrades", s.upgrades)
 	r.Get("/sitemap.xml", s.sitemap)
 	r.Get("/sitemap-{page}.xml", s.sitemapPage)
 	r.Post("/contracts", s.write(s.register))
@@ -450,6 +451,39 @@ func (s *Server) list(r *http.Request, query, network string, page int) (*store.
 	return s.reg.Store().ListContracts(r.Context(), filter)
 }
 
+// upgrades renders the paginated recent interface upgrades page.
+func (s *Server) upgrades(w http.ResponseWriter, r *http.Request) {
+	network := strings.TrimSpace(r.URL.Query().Get("network"))
+	pageNumber := requestedPage(r)
+
+	filter := store.UpgradeFilter{
+		Network: network,
+		Limit:   contractsPerPage,
+		Offset:  pageOffset(pageNumber),
+	}
+	filter.Normalize()
+
+	page, err := s.reg.Store().ListUpgrades(r.Context(), filter)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	networks, err := s.reg.Store().ListNetworks(r.Context())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+
+	s.render(w, r, "upgrades.html", upgradesData{
+		Network:   network,
+		Networks:  networks,
+		Upgrades:  page.Upgrades,
+		Total:     page.Total,
+		Page:      pageNumber,
+		PageCount: pageCount(page.Total),
+	})
+}
+
 func requestedPage(r *http.Request) int {
 	page, err := strconv.Atoi(r.URL.Query().Get("page"))
 	if err != nil || page < 1 {
@@ -515,6 +549,15 @@ type contractData struct {
 	Interface       *model.Interface
 	IsCurrent       bool
 	Networks        []string
+}
+
+type upgradesData struct {
+	Network   string
+	Networks  []string
+	Upgrades  []store.Upgrade
+	Total     int
+	Page      int
+	PageCount int
 }
 
 // render writes a template, buffering it first so that a failure midway
@@ -601,6 +644,19 @@ func funcs() template.FuncMap {
 				return "/?" + encoded
 			}
 			return "/"
+		},
+		"upgradesPageURL": func(network string, page int) string {
+			values := url.Values{}
+			if network != "" {
+				values.Set("network", network)
+			}
+			if page > 1 {
+				values.Set("page", strconv.Itoa(page))
+			}
+			if encoded := values.Encode(); encoded != "" {
+				return "/upgrades?" + encoded
+			}
+			return "/upgrades"
 		},
 		"dec": func(n int) int { return n - 1 },
 		"inc": func(n int) int { return n + 1 },

@@ -863,3 +863,62 @@ func TestContractPageShowsDeployerAndVerification(t *testing.T) {
 		assert.Contains(t, body, "for an earlier version")
 	})
 }
+
+func TestUpgradesPage(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	h := newHarness(t)
+
+	t.Run("empty registry shows empty upgrades message and links from index", func(t *testing.T) {
+		_, indexBody := h.get(t, "/")
+		assert.Contains(t, indexBody, `href="/upgrades"`)
+		assert.Contains(t, indexBody, `href="/api/upgrades.atom"`)
+
+		resp, body := h.get(t, "/upgrades")
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Contains(t, resp.Header.Get("Content-Type"), "text/html")
+		assert.Contains(t, body, "No interface upgrades recorded")
+		assert.Contains(t, body, `href="/api/upgrades.atom"`)
+	})
+
+	iface := &model.Interface{
+		ABIVersion: model.ABIVersion,
+		Functions:  []model.Function{},
+		Types: model.Types{
+			Structs: []model.Struct{}, Unions: []model.Union{},
+			Enums: []model.Enum{}, ErrorEnums: []model.ErrorEnum{},
+		},
+		Events: []model.Event{},
+	}
+
+	h.store.SetClock(func() time.Time { return time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC) })
+	require.NoError(t, h.store.Save(ctx, store.Contract{
+		ContractID:      idA,
+		Network:         "testnet",
+		CurrentWasmHash: "11111111111111110000000000000000",
+	}, iface))
+
+	h.store.SetClock(func() time.Time { return time.Date(2026, 8, 2, 12, 30, 0, 0, time.UTC) })
+	require.NoError(t, h.store.Save(ctx, store.Contract{
+		ContractID:      idA,
+		Network:         "testnet",
+		CurrentWasmHash: "22222222222222220000000000000000",
+	}, iface))
+
+	t.Run("populated upgrades page shows old/new WASM hashes and filters by network", func(t *testing.T) {
+		resp, body := h.get(t, "/upgrades")
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Contains(t, body, "1 upgrade")
+		assert.Contains(t, body, idA)
+		assert.Contains(t, body, "1111111111111111")
+		assert.Contains(t, body, "2222222222222222")
+		assert.Contains(t, body, "2026-08-02 12:30 UTC")
+		assert.Contains(t, body, "/contracts/"+idA+"?network=testnet&amp;wasm_hash=11111111111111110000000000000000")
+		assert.Contains(t, body, "/contracts/"+idA+"?network=testnet&amp;wasm_hash=22222222222222220000000000000000")
+
+		resp, body = h.get(t, "/upgrades?network=public")
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Contains(t, body, "No interface upgrades recorded on public yet.")
+	})
+}
