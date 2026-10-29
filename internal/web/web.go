@@ -93,6 +93,7 @@ func (s *Server) Routes() chi.Router {
 	r.Use(securityHeaders)
 
 	r.Get("/", s.index)
+	r.Get("/stats", s.stats)
 	r.Get("/sitemap.xml", s.sitemap)
 	r.Get("/sitemap-{page}.xml", s.sitemapPage)
 	r.Post("/contracts", s.write(s.register))
@@ -192,8 +193,47 @@ func (s *Server) indexPage(w http.ResponseWriter, r *http.Request, status int, d
 	s.renderStatus(w, r, status, "index.html", data)
 }
 
-// maxRegisterForm caps the registration form's body. It carries a single
-// contract ID, so anything larger is a mistake.
+// statsData is the values the statistics template renders.
+type statsData struct {
+	MetaTitle string
+	MetaURL   string
+
+	Stats             *store.Stats
+	Networks          []string
+	ReadOnly          bool
+	WriteAuthRequired bool
+}
+
+// stats renders the registry statistics page.
+func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
+	st, err := s.reg.Store().Stats(r.Context())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	networks, err := s.reg.Store().ListNetworks(r.Context())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+
+	meta := "SoroVault A� registry statistics"
+	var metaURL string
+	if s.publicURL != "" {
+		metaURL = s.publicURL + "/stats"
+		meta = "SoroVault registry statistics"
+	}
+
+	s.render(w, r, "stats.html", statsData{
+		MetaTitle:         meta,
+		MetaURL:           metaURL,
+		Stats:             st,
+		Networks:          networks,
+		ReadOnly:          s.readOnly,
+		WriteAuthRequired: s.writeAuthRequired,
+	})
+}
+
 const maxRegisterForm = 4 << 10
 
 // register accepts the index page's registration form.

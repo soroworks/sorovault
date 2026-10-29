@@ -1,0 +1,7 @@
+{{define "stats.html"}}
+{{template "page_head" "SoroVault - registry statistics"}}
+<h1>Registry statistics</h1><p class="lede">A snapshot of what this registry knows, counted directly from the store.</p>
+<section><h2>Totals</h2><dl class="kv"><div><dt>Contracts</dt><dd>{{.Stats.Contracts}}</dd></div><div><dt>Interface versions stored</dt><dd>{{.Stats.Versions}}</dd></div></dl></section>
+<section><h2>By network</h2>{{if .Stats.Networks}}<table class="contracts"><thead><tr><th scope="col">Network</th><th scope="col" class="num">Contracts</th><th scope="col" class="num">Versions</th></tr></thead><tbody>{{range .Stats.Networks}}<tr><td><a href="/?network={{.Network | urlquery}}">{{.Network}}</a></td><td class="num">{{.Contracts}}</td><td class="num">{{.Versions}}</td></tr>{{end}}</tbody></table>{{else}}<p class="dim">No contracts registered yet.</p>{{end}}</section>
+{{if .Stats.Latest}}<section><h2>Most recently registered</h2><p><a href="/contracts/{{.Stats.Latest.ContractID}}?network={{.Stats.Latest.Network | urlquery}}">{{.Stats.Latest.ContractID}}</a> on {{.Stats.Latest.Network}}{{if .Stats.Latest.Name}} — {{.Stats.Latest.Name}}{{end}}</p></section>{{end}}
+<p><a href="/">Back to all contracts</a></p>{{template "page_foot"}}{{end}}
