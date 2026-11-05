@@ -260,10 +260,12 @@ func TestIndexListsContracts(t *testing.T) {
 
 	h := newHarness(t)
 	h.register(t, idA)
+	require.NoError(t, h.store.UpdateName(context.Background(), "testnet", idA, "Example Token"))
 
 	resp, body := h.get(t, "/")
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Contains(t, body, idA)
+	assert.Contains(t, body, "Example Token")
 	assert.Contains(t, body, "1 contract")
 	assert.Contains(t, body, `id="contract-rows"`)
 }

@@ -255,7 +255,7 @@ func corsMiddleware(origins []string) func(http.Handler) http.Handler {
 
 	methods := []string{
 		http.MethodGet, http.MethodHead, http.MethodOptions,
-		http.MethodPost, http.MethodPut,
+		http.MethodPost, http.MethodPut, http.MethodPatch,
 	}
 	if len(origins) == 1 && origins[0] == "*" {
 		methods = []string{http.MethodGet, http.MethodHead, http.MethodOptions}

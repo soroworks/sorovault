@@ -29,6 +29,7 @@ func newAddCmd() *cobra.Command {
 	var (
 		asJSON   bool
 		fromFile string
+		name     string
 	)
 
 	cmd := &cobra.Command{
@@ -54,13 +55,21 @@ contract has been upgraded since it was last seen.`,
 			if len(contractIDs) == 0 {
 				return fmt.Errorf("no contract IDs found")
 			}
+			if name != "" && len(contractIDs) > 1 {
+				return fmt.Errorf("--name can only be used when adding a single contract")
+			}
+			if name != "" {
+				if _, err := store.ValidateName(name); err != nil {
+					return err
+				}
+			}
 
 			return withApp(cmd.Context(), func(ctx context.Context, a *app) error {
 				var failed int
 
 				for _, contractID := range contractIDs {
 					fetchCtx, cancel := a.fetchContext(ctx)
-					result, err := a.registry.Register(fetchCtx, contractID)
+					result, err := a.registry.RegisterNamed(fetchCtx, contractID, name)
 					cancel()
 
 					if err != nil {
@@ -88,6 +97,7 @@ contract has been upgraded since it was last seen.`,
 
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the full result as JSON")
 	cmd.Flags().StringVar(&fromFile, "from-file", "", "read contract IDs from a file (one per line; use - for stdin)")
+	cmd.Flags().StringVar(&name, "name", "", "human-readable name for the contract (single contract only)")
 	return cmd
 }
 
