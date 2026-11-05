@@ -73,7 +73,7 @@ func postgresFactory(t *testing.T, url string) factory {
 		// Truncating rather than recreating keeps setup cheap; the cascade
 		// clears specs along with contracts. Subscriptions stand alone, so
 		// they are named too.
-		_, err := pool.Exec(context.Background(), "TRUNCATE contracts, subscriptions CASCADE")
+		_, err := pool.Exec(context.Background(), "TRUNCATE contracts, subscriptions, audit_log CASCADE")
 		require.NoError(t, err)
 
 		return store.NewPostgresFromPool(pool)
@@ -181,6 +181,80 @@ func runStoreSuite(t *testing.T, newStore factory) {
 		require.ErrorIs(t, err, store.ErrNotFound)
 		require.ErrorIs(t, s.Unsubscribe(ctx, secret), store.ErrNotFound)
 		require.ErrorIs(t, s.MarkSubscriptionInactive(ctx, secret), store.ErrNotFound)
+	})
+
+	t.Run("audit log records writes, filters and pages newest first", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+
+		empty, err := s.ListAudit(ctx, store.AuditFilter{})
+		require.NoError(t, err)
+		assert.Zero(t, empty.Total)
+		assert.Empty(t, empty.Entries)
+
+		t1 := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
+		t2 := t1.Add(time.Minute)
+		t3 := t2.Add(time.Minute)
+
+		require.NoError(t, s.RecordAudit(ctx, store.AuditEntry{
+			Action:     store.AuditActionRegister,
+			Network:    "testnet",
+			ContractID: idA,
+			ClientIP:   "192.0.2.1",
+			TokenName:  "ci",
+			CreatedAt:  t1,
+		}))
+		require.NoError(t, s.RecordAudit(ctx, store.AuditEntry{
+			Action:     store.AuditActionUpdateSource,
+			Network:    "testnet",
+			ContractID: idA,
+			ClientIP:   "192.0.2.2",
+			TokenName:  "ops",
+			CreatedAt:  t2,
+		}))
+		require.NoError(t, s.RecordAudit(ctx, store.AuditEntry{
+			Action:     store.AuditActionRefresh,
+			Network:    "public",
+			ContractID: idB,
+			ClientIP:   "192.0.2.3",
+			CreatedAt:  t3,
+		}))
+
+		all, err := s.ListAudit(ctx, store.AuditFilter{})
+		require.NoError(t, err)
+		require.Equal(t, 3, all.Total)
+		require.Len(t, all.Entries, 3)
+		assert.Equal(t, store.AuditActionRefresh, all.Entries[0].Action, "newest entry comes first")
+		assert.Equal(t, store.AuditActionUpdateSource, all.Entries[1].Action)
+		assert.Equal(t, store.AuditActionRegister, all.Entries[2].Action)
+		assert.Equal(t, "ci", all.Entries[2].TokenName)
+		assert.Equal(t, "192.0.2.1", all.Entries[2].ClientIP)
+
+		// Filter by network, contract, and action.
+		byNet, err := s.ListAudit(ctx, store.AuditFilter{Network: "testnet"})
+		require.NoError(t, err)
+		assert.Equal(t, 2, byNet.Total)
+
+		byContract, err := s.ListAudit(ctx, store.AuditFilter{ContractID: idB})
+		require.NoError(t, err)
+		assert.Equal(t, 1, byContract.Total)
+
+		byAction, err := s.ListAudit(ctx, store.AuditFilter{Action: store.AuditActionUpdateSource})
+		require.NoError(t, err)
+		require.Equal(t, 1, byAction.Total)
+		assert.Equal(t, "ops", byAction.Entries[0].TokenName)
+
+		// Pagination and past-the-end total.
+		paged, err := s.ListAudit(ctx, store.AuditFilter{Limit: 1, Offset: 1})
+		require.NoError(t, err)
+		assert.Equal(t, 3, paged.Total)
+		require.Len(t, paged.Entries, 1)
+		assert.Equal(t, store.AuditActionUpdateSource, paged.Entries[0].Action)
+
+		past, err := s.ListAudit(ctx, store.AuditFilter{Offset: 50})
+		require.NoError(t, err)
+		assert.Equal(t, 3, past.Total)
+		assert.Empty(t, past.Entries)
 	})
 
 	t.Run("filters by exact implemented standard", func(t *testing.T) {
