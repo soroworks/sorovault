@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -26,6 +27,17 @@ var ErrNotFound = errors.New("store: not found")
 // ErrRegistryNotEmpty is returned by Import when it is asked to load into a
 // registry that already holds contracts and merge was not requested.
 var ErrRegistryNotEmpty = errors.New("store: registry is not empty")
+
+// ErrInvalidTag is returned when a contract tag is malformed or too many tags
+// are supplied.
+var ErrInvalidTag = errors.New("store: invalid tag")
+
+// Bounds and built-in values for contract tags.
+const (
+	MaxContractTags = 20
+	MaxTagLength    = 32
+	TagToken        = "token"
+)
 
 // SnapshotVersion is the on-disk format version of a Snapshot. Reading a
 // snapshot with any other version is refused rather than guessed at.
@@ -91,6 +103,10 @@ type Contract struct {
 	// Implements lists the standard interface IDs detected from the current
 	// decoded interface, such as "sep41".
 	Implements []string `json:"implements,omitempty"`
+
+	// Tags lists lowercase category labels attached to the contract, either
+	// set through the API or detected automatically (such as "token").
+	Tags []string `json:"tags,omitempty"`
 
 	// DeprecatedSince is when the contract was marked deprecated: it has a
 	// replacement and users should stop building on it. It is nil while
@@ -355,6 +371,8 @@ type ListFilter struct {
 	Types []string
 	// Implements restricts results to contracts implementing every listed standard ID.
 	Implements []string
+	// Tags restricts results to contracts carrying every listed tag.
+	Tags []string
 	// Limit is the maximum number of rows to return. Zero means
 	// DefaultLimit; anything above MaxLimit is clamped to MaxLimit.
 	Limit int
@@ -393,6 +411,7 @@ func (f *ListFilter) Normalize() {
 	f.Functions = cleanNames(f.Functions)
 	f.Types = cleanNames(f.Types)
 	f.Implements = cleanNames(f.Implements)
+	f.Tags = cleanTags(f.Tags)
 	if f.Limit <= 0 {
 		f.Limit = DefaultLimit
 	}
@@ -415,6 +434,99 @@ func cleanNames(names []string) []string {
 		}
 		out = append(out, name)
 	}
+	return out
+}
+
+// cleanTags trims and lowercases tag filter values, dropping empty ones.
+func cleanTags(tags []string) []string {
+	out := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		tag = strings.ToLower(strings.TrimSpace(tag))
+		if tag == "" {
+			continue
+		}
+		out = append(out, tag)
+	}
+	return out
+}
+
+// ValidateTags normalises, deduplicates and validates a list of contract tags.
+// Tags are lowercased after trimming whitespace; each tag must be 1..32 ASCII
+// lowercase letters, digits, hyphens or underscores, starting with a letter or
+// digit, and at most MaxContractTags distinct tags may be set on a contract.
+func ValidateTags(tags []string) ([]string, error) {
+	if len(tags) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]struct{}, len(tags))
+	out := make([]string, 0, len(tags))
+	for _, raw := range tags {
+		tag := strings.ToLower(strings.TrimSpace(raw))
+		if tag == "" {
+			return nil, fmt.Errorf("%w: tag must not be empty", ErrInvalidTag)
+		}
+		if len(tag) > MaxTagLength {
+			return nil, fmt.Errorf("%w: %q exceeds %d characters", ErrInvalidTag, tag, MaxTagLength)
+		}
+		if !isValidTag(tag) {
+			return nil, fmt.Errorf("%w: %q must use lowercase letters, digits, hyphens or underscores and start with a letter or digit", ErrInvalidTag, tag)
+		}
+		if _, ok := seen[tag]; ok {
+			continue
+		}
+		seen[tag] = struct{}{}
+		out = append(out, tag)
+	}
+	if len(out) > MaxContractTags {
+		return nil, fmt.Errorf("%w: at most %d tags per contract, got %d", ErrInvalidTag, MaxContractTags, len(out))
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func isValidTag(tag string) bool {
+	for i := 0; i < len(tag); i++ {
+		c := tag[i]
+		isAlphaNum := (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+		if i == 0 && !isAlphaNum {
+			return false
+		}
+		if !isAlphaNum && c != '-' && c != '_' {
+			return false
+		}
+	}
+	return len(tag) > 0
+}
+
+// autoTags combines existing and newly supplied tags with automatic tags
+// derived from the contract's detected standards (such as "token" for SEP-41).
+func autoTags(implements, existing, added []string) []string {
+	seen := make(map[string]struct{}, len(existing)+len(added)+1)
+	add := func(raw string) {
+		tag := strings.ToLower(strings.TrimSpace(raw))
+		if isValidTag(tag) && len(tag) <= MaxTagLength {
+			seen[tag] = struct{}{}
+		}
+	}
+	for _, t := range existing {
+		add(t)
+	}
+	for _, t := range added {
+		add(t)
+	}
+	for _, std := range implements {
+		if std == "sep41" {
+			seen[TagToken] = struct{}{}
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for tag := range seen {
+		out = append(out, tag)
+	}
+	sort.Strings(out)
 	return out
 }
 
@@ -621,6 +733,10 @@ type Store interface {
 	// ClearDeprecation lifts the mark, restoring the contract to active
 	// use.
 	ClearDeprecation(ctx context.Context, network, contractID string) error
+
+	// SetTags replaces a contract's tags with the given validated, lowercase
+	// tags. An empty slice clears the tags.
+	SetTags(ctx context.Context, network, contractID string, tags []string) error
 
 	// Delete removes a contract and every interface version stored for it.
 	// It returns ErrNotFound when the contract is not in the registry.

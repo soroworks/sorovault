@@ -18,6 +18,7 @@
       hx-push-url="true">
   <input id="q" name="q" type="search" value="{{.Query}}"
          placeholder="Search contract ID, name, function or type…" autocomplete="off" autofocus>
+  {{if .Tag}}<input type="hidden" name="tag" value="{{.Tag}}">{{end}}
   <label class="network-filter" for="network">
     <span>Network</span>
     <select id="network" name="network">

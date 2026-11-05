@@ -266,6 +266,11 @@ func (m *Memory) Save(ctx context.Context, c Contract, iface *model.Interface) e
 	// A saved interface means the contract was live, so it is not missing
 	// any more.
 	c.Implements = spec.ImplementedStandards(iface)
+	var existingTags []string
+	if found {
+		existingTags = existing.Tags
+	}
+	c.Tags = autoTags(c.Implements, existingTags, c.Tags)
 	c.MissingSince = nil
 	m.contracts[k] = c
 
@@ -349,6 +354,27 @@ func (m *Memory) ClearDeprecation(ctx context.Context, network, contractID strin
 	c.DeprecatedSince = nil
 	c.Successor = ""
 	c.DeprecationNote = ""
+	m.contracts[k] = c
+	return nil
+}
+
+// SetTags replaces a contract's tags with the validated, lowercase tags.
+func (m *Memory) SetTags(ctx context.Context, network, contractID string, tags []string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	normalized, err := ValidateTags(tags)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := key(network, contractID)
+	c, ok := m.contracts[k]
+	if !ok {
+		return fmt.Errorf("%w: contract %s on %s", ErrNotFound, contractID, network)
+	}
+	c.Tags = normalized
 	m.contracts[k] = c
 	return nil
 }
@@ -466,6 +492,7 @@ func (m *Memory) Export(ctx context.Context) (*Snapshot, error) {
 		cs := ContractSnapshot{Contract: c}
 		cs.Contract.MissingSince = copyMissing(c.MissingSince)
 		cs.Contract.VerifiedAt = copyMissing(c.VerifiedAt)
+		cs.Contract.Tags = copyStrings(c.Tags)
 		cs.Contract.Matches = nil
 		for _, spec := range m.specs[k] {
 			cloned, err := cloneInterface(spec.Interface)
@@ -509,6 +536,7 @@ func (m *Memory) Import(ctx context.Context, snapshot *Snapshot, merge bool) err
 	for _, cs := range snapshot.Contracts {
 		cs.Contract.MissingSince = copyMissing(cs.Contract.MissingSince)
 		cs.Contract.VerifiedAt = copyMissing(cs.Contract.VerifiedAt)
+		cs.Contract.Tags = copyStrings(cs.Contract.Tags)
 		cs.Contract.Matches = nil
 		for i := range cs.Versions {
 			cloned, err := cloneInterface(cs.Versions[i].Interface)
@@ -600,7 +628,17 @@ func (m *Memory) GetContract(ctx context.Context, network, contractID string) (*
 	}
 	c.MissingSince = copyMissing(c.MissingSince)
 	c.VerifiedAt = copyMissing(c.VerifiedAt)
+	c.Tags = copyStrings(c.Tags)
 	return &c, nil
+}
+
+func copyStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, len(in))
+	copy(out, in)
+	return out
 }
 
 // copyMissing returns an independent copy of a missing mark, so that a
@@ -660,6 +698,7 @@ func (m *Memory) Stats(ctx context.Context) (*Stats, error) {
 			latest := c
 			latest.MissingSince = copyMissing(c.MissingSince)
 			latest.VerifiedAt = copyMissing(c.VerifiedAt)
+			latest.Tags = copyStrings(c.Tags)
 			stats.Latest = &latest
 		}
 	}
@@ -771,6 +810,9 @@ func (m *Memory) ListContracts(ctx context.Context, f ListFilter) (*ContractPage
 		if len(f.Implements) > 0 && !hasAllStandards(c.Implements, f.Implements) {
 			continue
 		}
+		if len(f.Tags) > 0 && !hasAllStandards(c.Tags, f.Tags) {
+			continue
+		}
 		if len(f.Functions) > 0 || len(f.Types) > 0 {
 			if !hasAll(m.currentInterface(k, c.CurrentWasmHash), f.Functions, f.Types) {
 				continue
@@ -791,6 +833,7 @@ func (m *Memory) ListContracts(ctx context.Context, f ListFilter) (*ContractPage
 		}
 		c.MissingSince = copyMissing(c.MissingSince)
 		c.VerifiedAt = copyMissing(c.VerifiedAt)
+		c.Tags = copyStrings(c.Tags)
 		rows = append(rows, docRow{contract: c, rank: rank})
 	}
 
@@ -869,6 +912,7 @@ func (m *Memory) ListContractsByWasm(ctx context.Context, f WasmFilter) (*WasmCo
 		}
 		c.MissingSince = copyMissing(c.MissingSince)
 		c.VerifiedAt = copyMissing(c.VerifiedAt)
+		c.Tags = copyStrings(c.Tags)
 		matched = append(matched, WasmContract{Contract: c, Current: current})
 	}
 

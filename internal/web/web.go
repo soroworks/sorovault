@@ -166,9 +166,10 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 func (s *Server) indexPage(w http.ResponseWriter, r *http.Request, status int, data indexData) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	network := strings.TrimSpace(r.URL.Query().Get("network"))
+	tag := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("tag")))
 	pageNumber := requestedPage(r)
 
-	page, err := s.list(r, query, network, pageNumber)
+	page, err := s.list(r, query, network, tag, pageNumber)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -181,6 +182,7 @@ func (s *Server) indexPage(w http.ResponseWriter, r *http.Request, status int, d
 
 	data.Query = query
 	data.Network = network
+	data.Tag = tag
 	data.Networks = networks
 	data.Contracts = page.Contracts
 	data.Total = page.Total
@@ -341,9 +343,10 @@ func retryAfter(d time.Duration) int {
 func (s *Server) contractRows(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	network := strings.TrimSpace(r.URL.Query().Get("network"))
+	tag := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("tag")))
 	pageNumber := requestedPage(r)
 
-	page, err := s.list(r, query, network, pageNumber)
+	page, err := s.list(r, query, network, tag, pageNumber)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -352,6 +355,7 @@ func (s *Server) contractRows(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "contract_rows.html", indexData{
 		Query:     query,
 		Network:   network,
+		Tag:       tag,
 		Contracts: page.Contracts,
 		Total:     page.Total,
 		Page:      pageNumber,
@@ -439,10 +443,15 @@ func (s *Server) contract(w http.ResponseWriter, r *http.Request) {
 }
 
 // list runs a listing query for the UI, capped to a single screenful.
-func (s *Server) list(r *http.Request, query, network string, page int) (*store.ContractPage, error) {
+func (s *Server) list(r *http.Request, query, network, tag string, page int) (*store.ContractPage, error) {
+	var tags []string
+	if tag != "" {
+		tags = []string{tag}
+	}
 	filter := store.ListFilter{
 		Query:   query,
 		Network: network,
+		Tags:    tags,
 		Limit:   contractsPerPage,
 		Offset:  pageOffset(page),
 	}
@@ -480,6 +489,7 @@ func pageCount(total int) int {
 type indexData struct {
 	Query     string
 	Network   string
+	Tag       string
 	Networks  []string
 	Contracts []store.Contract
 	Total     int
@@ -586,13 +596,16 @@ func funcs() template.FuncMap {
 		"markdown":       renderMarkdown,
 		"anchor":         anchor,
 		"anchorID":       anchorID,
-		"pageURL": func(query, network string, page int) string {
+		"pageURL": func(query, network string, page int, tags ...string) string {
 			values := url.Values{}
 			if query != "" {
 				values.Set("q", query)
 			}
 			if network != "" {
 				values.Set("network", network)
+			}
+			if len(tags) > 0 && tags[0] != "" {
+				values.Set("tag", tags[0])
 			}
 			if page > 1 {
 				values.Set("page", strconv.Itoa(page))

@@ -1,7 +1,7 @@
 {{define "contract_rows.html"}}
 <div id="contract-rows">
 {{if .Total}}
-  <p class="count">{{.Total}} contract{{if ne .Total 1}}s{{end}}{{if .Query}} matching “{{.Query}}”{{end}}</p>
+  <p class="count">{{.Total}} contract{{if ne .Total 1}}s{{end}}{{if .Query}} matching “{{.Query}}”{{end}}{{if .Tag}} tagged <code>{{.Tag}}</code> (<a href="{{pageURL .Query .Network 1}}">clear</a>){{end}}</p>
   {{if .Contracts}}
   <table class="contracts">
     <thead>
@@ -21,6 +21,7 @@
           {{if .Verified}}<span class="badge verified" title="publisher verified by the deploying account">verified</span>{{end}}
           {{if .MissingSince}}<span class="badge missing" title="not found on the network since {{.MissingSince.UTC.Format "2006-01-02 15:04"}} UTC">missing</span>{{end}}
           {{range .Implements}}{{if eq . "sep41"}}<span class="badge standard" title="Implements SEP-41 v0.5.2">SEP-41 token</span>{{else}}<span class="badge standard">{{.}}</span>{{end}}{{end}}
+          {{range .Tags}}<a class="badge tag" href="/?tag={{.}}">{{.}}</a>{{end}}
           {{if .Name}}<div class="name">{{.Name}}</div>{{end}}
           {{if .Matches}}<div class="matches">matches {{range $i, $m := .Matches}}{{if $i}}, {{end}}<code>{{$m}}</code>{{end}}</div>{{end}}
         </td>
@@ -43,15 +44,17 @@
   {{end}}
   {{if gt .PageCount 1}}
   <nav class="pagination" aria-label="Contract pages">
-    {{if gt .Page 1}}<a href="{{pageURL .Query .Network (dec .Page)}}">Previous</a>{{end}}
+    {{if gt .Page 1}}<a href="{{pageURL .Query .Network (dec .Page) .Tag}}">Previous</a>{{end}}
     <span>Page {{.Page}} of {{.PageCount}}</span>
-    {{if lt .Page .PageCount}}<a href="{{pageURL .Query .Network (inc .Page)}}">Next</a>{{end}}
+    {{if lt .Page .PageCount}}<a href="{{pageURL .Query .Network (inc .Page) .Tag}}">Next</a>{{end}}
   </nav>
   {{end}}
 {{else}}
   <div class="empty">
     {{if .Query}}
       <p>No contract matches “{{.Query}}”.</p>
+    {{else if .Tag}}
+      <p>No contract tagged <code>{{.Tag}}</code>.</p>
     {{else}}
       <p>No contracts registered yet.</p>
       <p class="dim">Add one with <code>sorovault add &lt;contract_id&gt;</code>.</p>

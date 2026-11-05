@@ -16,6 +16,9 @@
 
 <dl class="facts">
   <div><dt>Network</dt><dd><span class="badge">{{.Contract.Network}}</span></dd></div>
+  {{if .Contract.Tags}}
+  <div><dt>Tags</dt><dd>{{range .Contract.Tags}}<a class="badge tag" href="/?tag={{.}}">{{.}}</a> {{end}}</dd></div>
+  {{end}}
   {{if .Interface.Builtin}}
   <div><dt>Interface</dt><dd><span class="badge">Built-in Stellar Asset Contract</span> <code>{{.Spec.WasmHash}}</code></dd></div>
   {{else}}

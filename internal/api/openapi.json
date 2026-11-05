@@ -52,6 +52,7 @@
           { "name": "function", "in": "query", "description": "Only contracts whose current interface declares a function with exactly this name. Repeatable; every name must match. Case-sensitive.", "schema": { "type": "array", "items": { "type": "string" } }, "style": "form", "explode": true },
           { "name": "type", "in": "query", "description": "Only contracts whose current interface declares a user-defined type with exactly this name. Repeatable; every name must match. Case-sensitive.", "schema": { "type": "array", "items": { "type": "string" } }, "style": "form", "explode": true },
           { "name": "implements", "in": "query", "description": "Only contracts implementing every listed standard interface ID, such as sep41. Repeatable.", "schema": { "type": "array", "items": { "type": "string" } }, "style": "form", "explode": true },
+          { "name": "tag", "in": "query", "description": "Only contracts carrying every listed tag, such as token or dex. Repeatable; compared case-insensitively.", "schema": { "type": "array", "items": { "type": "string" } }, "style": "form", "explode": true },
           { "$ref": "#/components/parameters/network" },
           { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 } },
           { "name": "offset", "in": "query", "deprecated": true, "description": "Deprecated. Rows to skip; keep paging with cursor instead — offsets repeat and skip rows added while a client pages.", "schema": { "type": "integer", "minimum": 0, "default": 0 } },
@@ -71,7 +72,10 @@
           "required": true,
           "content": { "application/json": { "schema": {
             "type": "object",
-            "properties": { "contract_id": { "$ref": "#/components/schemas/ContractID" } },
+            "properties": {
+              "contract_id": { "$ref": "#/components/schemas/ContractID" },
+              "tags": { "type": "array", "items": { "type": "string" }, "description": "Optional category tags to attach to the contract." }
+            },
             "required": ["contract_id"],
             "additionalProperties": false
           }, "examples": { "zkvote": { "value": { "contract_id": "CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN" } } } } }
@@ -191,6 +195,21 @@
         "security": [{ "bearerToken": [] }],
         "parameters": [{ "$ref": "#/components/parameters/id" }, { "$ref": "#/components/parameters/network" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SourceRequest" } } } },
+        "responses": {
+          "200": { "description": "Updated contract metadata.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Contract" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/contracts/{id}/tags": {
+      "put": {
+        "summary": "Set a contract's tags",
+        "description": "Replaces a contract's tags with the given lowercase, validated tags. Pass an empty array to clear all tags.",
+        "operationId": "setContractTags",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/id" }, { "$ref": "#/components/parameters/network" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TagsRequest" } } } },
         "responses": {
           "200": { "description": "Updated contract metadata.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Contract" } } } },
           "400": { "$ref": "#/components/responses/BadRequest" },
@@ -879,6 +898,7 @@
           "verified_wasm_hash": { "$ref": "#/components/schemas/WasmHash" },
           "matches": { "type": "array", "items": { "type": "string" }, "description": "Interface symbols a search query matched. Only present on search results." },
           "implements": { "type": "array", "items": { "type": "string" }, "description": "Standard interface IDs detected from the current contract interface." },
+          "tags": { "type": "array", "items": { "type": "string" }, "description": "Lowercase category tags attached to the contract." },
           "deprecated_since": { "type": "string", "format": "date-time", "description": "When the contract was marked deprecated. Absent while the contract is in active use." },
           "successor": { "type": "string", "description": "The contract ID that replaces a deprecated one. Absent when no successor is recorded." },
           "deprecation_note": { "type": "string", "description": "How to move over, from the tooling that marked the contract deprecated." }
@@ -940,6 +960,19 @@
           "source_commit": { "type": "string", "pattern": "^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$" }
         },
         "required": ["source_url"],
+        "additionalProperties": false
+      },
+      "TagsRequest": {
+        "type": "object",
+        "properties": {
+          "tags": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$" },
+            "maxItems": 20,
+            "description": "Category tags for the contract; normalized to lowercase."
+          }
+        },
+        "required": ["tags"],
         "additionalProperties": false
       },
       "VerifyRequest": {
@@ -1066,6 +1099,7 @@
           },
           "current": { "type": "boolean", "description": "False when an older version was requested with wasm_hash." },
           "implements": { "type": "array", "items": { "type": "string" }, "description": "Standard interface IDs detected from the current contract interface." },
+          "tags": { "type": "array", "items": { "type": "string" }, "description": "Lowercase category tags attached to the contract." },
           "interface": { "$ref": "#/components/schemas/Interface" }
         },
         "required": ["contract_id", "network", "first_seen", "decoded_at", "origin", "current", "implements", "interface"]
