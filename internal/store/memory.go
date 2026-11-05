@@ -20,13 +20,15 @@ import (
 // and so `sorovault` can be run against a throwaway registry. It is not
 // durable: everything is lost when the process exits.
 type Memory struct {
-	mu        sync.RWMutex
-	contracts map[string]Contract
-	specs     map[string][]Spec
-	wasmSpecs map[string]WasmSpec
-	state     map[string]string
-	subs      map[string]Subscription
-	nextID    int64
+	mu          sync.RWMutex
+	contracts   map[string]Contract
+	specs       map[string][]Spec
+	wasmSpecs   map[string]WasmSpec
+	state       map[string]string
+	subs        map[string]Subscription
+	audit       []AuditEntry
+	nextID      int64
+	nextAuditID int64
 
 	// now is the clock, swappable so tests can produce deterministic and
 	// strictly ordered timestamps.
@@ -165,6 +167,68 @@ func (m *Memory) Unsubscribe(ctx context.Context, secret string) error {
 	}
 	delete(m.subs, k)
 	return nil
+}
+
+// RecordAudit appends a write event to the in-memory audit log.
+func (m *Memory) RecordAudit(ctx context.Context, entry AuditEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(entry.Action) == "" || strings.TrimSpace(entry.Network) == "" || strings.TrimSpace(entry.ContractID) == "" {
+		return errors.New("store: audit entry requires action, network and contract ID")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.nextAuditID++
+	entry.ID = m.nextAuditID
+	if entry.CreatedAt.IsZero() {
+		entry.CreatedAt = m.now().UTC()
+	} else {
+		entry.CreatedAt = entry.CreatedAt.UTC()
+	}
+	m.audit = append(m.audit, entry)
+	return nil
+}
+
+// ListAudit returns filtered audit entries ordered newest first.
+func (m *Memory) ListAudit(ctx context.Context, f AuditFilter) (*AuditPage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	f.Normalize()
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var matched []AuditEntry
+	for _, entry := range m.audit {
+		if f.Network != "" && entry.Network != f.Network {
+			continue
+		}
+		if f.ContractID != "" && entry.ContractID != f.ContractID {
+			continue
+		}
+		if f.Action != "" && entry.Action != f.Action {
+			continue
+		}
+		matched = append(matched, entry)
+	}
+
+	sort.Slice(matched, func(i, j int) bool {
+		if !matched[i].CreatedAt.Equal(matched[j].CreatedAt) {
+			return matched[i].CreatedAt.After(matched[j].CreatedAt)
+		}
+		return matched[i].ID > matched[j].ID
+	})
+
+	page := &AuditPage{Total: len(matched), Entries: []AuditEntry{}}
+	if f.Offset < len(matched) {
+		end := min(f.Offset+f.Limit, len(matched))
+		page.Entries = append(page.Entries, matched[f.Offset:end]...)
+	}
+	return page, nil
 }
 
 func key(network, contractID string) string { return network + "\x00" + contractID }

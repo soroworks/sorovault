@@ -562,6 +562,64 @@ type UpgradePage struct {
 	Total int `json:"total"`
 }
 
+// Audit action names recorded for registry writes.
+const (
+	AuditActionRegister         = "register"
+	AuditActionRefresh          = "refresh"
+	AuditActionUpdateSource     = "update_source"
+	AuditActionVerifyPublisher  = "verify_publisher"
+	AuditActionSetDeprecation   = "set_deprecation"
+	AuditActionClearDeprecation = "clear_deprecation"
+)
+
+// AuditEntry is one recorded registry write operation.
+type AuditEntry struct {
+	ID         int64     `json:"id"`
+	Action     string    `json:"action"`
+	Network    string    `json:"network"`
+	ContractID string    `json:"contract_id"`
+	ClientIP   string    `json:"client_ip,omitempty"`
+	TokenName  string    `json:"token_name,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// AuditFilter selects and pages the audit log.
+type AuditFilter struct {
+	// Network restricts results to one network. Empty means all networks.
+	Network string
+	// ContractID restricts results to one contract. Empty means all contracts.
+	ContractID string
+	// Action restricts results to one action kind. Empty means all actions.
+	Action string
+	// Limit is the maximum number of entries to return. Zero means
+	// DefaultLimit; anything above MaxLimit is clamped to MaxLimit.
+	Limit int
+	// Offset is the number of entries to skip.
+	Offset int
+}
+
+// Normalize trims filter fields and clamps paging to the supported range.
+func (f *AuditFilter) Normalize() {
+	f.Network = strings.TrimSpace(f.Network)
+	f.ContractID = strings.TrimSpace(f.ContractID)
+	f.Action = strings.TrimSpace(f.Action)
+	if f.Limit <= 0 {
+		f.Limit = DefaultLimit
+	}
+	if f.Limit > MaxLimit {
+		f.Limit = MaxLimit
+	}
+	if f.Offset < 0 {
+		f.Offset = 0
+	}
+}
+
+// AuditPage is one page of the audit log.
+type AuditPage struct {
+	Entries []AuditEntry `json:"entries"`
+	Total   int          `json:"total"`
+}
+
 // Subscription is a per-contract webhook subscription.
 type Subscription struct {
 	ID          string    `json:"id"`
@@ -716,6 +774,12 @@ type Store interface {
 
 	// Unsubscribe removes a subscription by its secret (ID).
 	Unsubscribe(ctx context.Context, secret string) error
+
+	// RecordAudit appends an entry to the write audit log.
+	RecordAudit(ctx context.Context, entry AuditEntry) error
+
+	// ListAudit returns audit log entries ordered newest first.
+	ListAudit(ctx context.Context, f AuditFilter) (*AuditPage, error)
 }
 
 // newSubscriptionSecret returns a random 256-bit subscription ID. The ID is

@@ -491,6 +491,26 @@
         }
       }
     },
+    "/api/audit": {
+      "get": {
+        "summary": "List the write audit log",
+        "description": "Lists recorded registry write actions (registrations, refreshes, source edits, deprecations and publisher verifications) newest first. Protected by bearer authentication when API tokens are configured.",
+        "operationId": "listAudit",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/network" },
+          { "name": "contract_id", "in": "query", "description": "Restrict results to one contract ID.", "schema": { "$ref": "#/components/schemas/ContractID" } },
+          { "name": "action", "in": "query", "description": "Restrict results to one action kind, such as register, refresh or update_source.", "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 } },
+          { "name": "offset", "in": "query", "schema": { "type": "integer", "minimum": 0, "default": 0 } }
+        ],
+        "responses": {
+          "200": { "description": "One page of audit log entries.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AuditList" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "description": "Unauthorized when write authentication is configured.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
     "/api/upgrades": {
       "get": {
         "summary": "Recent interface upgrades",
@@ -856,6 +876,29 @@
           "offset": { "type": "integer" }
         },
         "required": ["upgrades", "total", "limit", "offset"]
+      },
+      "AuditEntry": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "action": { "type": "string", "description": "Write action performed (register, refresh, update_source, set_deprecation, clear_deprecation, verify_publisher)." },
+          "network": { "type": "string" },
+          "contract_id": { "$ref": "#/components/schemas/ContractID" },
+          "client_ip": { "type": "string" },
+          "token_name": { "type": "string", "description": "Name of the API token that authorised the write, when authentication is configured." },
+          "created_at": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "action", "network", "contract_id", "created_at"]
+      },
+      "AuditList": {
+        "type": "object",
+        "properties": {
+          "entries": { "type": "array", "items": { "$ref": "#/components/schemas/AuditEntry" } },
+          "total": { "type": "integer", "description": "Audit entries ignoring paging." },
+          "limit": { "type": "integer" },
+          "offset": { "type": "integer" }
+        },
+        "required": ["entries", "total", "limit", "offset"]
       },
       "ContractID": { "type": "string", "pattern": "^C[A-Z2-7]{55}$", "description": "Strkey contract address." },
       "WasmHash": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "SHA-256 of the contract's WASM module, hex." },

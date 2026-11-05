@@ -1120,6 +1120,91 @@ func (p *Postgres) Unsubscribe(ctx context.Context, secret string) error {
 	return nil
 }
 
+// RecordAudit appends a write event to the Postgres audit_log table.
+func (p *Postgres) RecordAudit(ctx context.Context, entry AuditEntry) error {
+	if strings.TrimSpace(entry.Action) == "" || strings.TrimSpace(entry.Network) == "" || strings.TrimSpace(entry.ContractID) == "" {
+		return errors.New("store: audit entry requires action, network and contract ID")
+	}
+	if entry.CreatedAt.IsZero() {
+		const q = `
+			INSERT INTO audit_log (action, network, contract_id, client_ip, token_name)
+			VALUES ($1, $2, $3, $4, $5)`
+		if _, err := p.pool.Exec(ctx, q, entry.Action, entry.Network, entry.ContractID, entry.ClientIP, entry.TokenName); err != nil {
+			return fmt.Errorf("store: recording audit entry: %w", err)
+		}
+		return nil
+	}
+	const q = `
+		INSERT INTO audit_log (action, network, contract_id, client_ip, token_name, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6)`
+	if _, err := p.pool.Exec(ctx, q, entry.Action, entry.Network, entry.ContractID, entry.ClientIP, entry.TokenName, entry.CreatedAt.UTC()); err != nil {
+		return fmt.Errorf("store: recording audit entry: %w", err)
+	}
+	return nil
+}
+
+// ListAudit returns filtered audit entries ordered newest first.
+func (p *Postgres) ListAudit(ctx context.Context, f AuditFilter) (*AuditPage, error) {
+	f.Normalize()
+
+	const q = `
+		SELECT id, action, network, contract_id, client_ip, token_name, created_at,
+		       count(*) OVER () AS total
+		FROM audit_log
+		WHERE ($1 = '' OR network = $1)
+		  AND ($2 = '' OR contract_id = $2)
+		  AND ($3 = '' OR action = $3)
+		ORDER BY created_at DESC, id DESC
+		LIMIT $4 OFFSET $5`
+
+	rows, err := p.pool.Query(ctx, q, f.Network, f.ContractID, f.Action, f.Limit, f.Offset)
+	if err != nil {
+		return nil, fmt.Errorf("store: listing audit log: %w", err)
+	}
+	defer rows.Close()
+
+	page := &AuditPage{Entries: []AuditEntry{}}
+	for rows.Next() {
+		var entry AuditEntry
+		var total int
+		if err := rows.Scan(
+			&entry.ID, &entry.Action, &entry.Network, &entry.ContractID,
+			&entry.ClientIP, &entry.TokenName, &entry.CreatedAt, &total,
+		); err != nil {
+			return nil, fmt.Errorf("store: scanning audit entry: %w", err)
+		}
+		page.Entries = append(page.Entries, entry)
+		page.Total = total
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: listing audit log: %w", err)
+	}
+
+	if len(page.Entries) == 0 && f.Offset > 0 {
+		total, err := p.countAudit(ctx, f)
+		if err != nil {
+			return nil, err
+		}
+		page.Total = total
+	}
+
+	return page, nil
+}
+
+func (p *Postgres) countAudit(ctx context.Context, f AuditFilter) (int, error) {
+	const q = `
+		SELECT count(*)
+		FROM audit_log
+		WHERE ($1 = '' OR network = $1)
+		  AND ($2 = '' OR contract_id = $2)
+		  AND ($3 = '' OR action = $3)`
+	var total int
+	if err := p.pool.QueryRow(ctx, q, f.Network, f.ContractID, f.Action).Scan(&total); err != nil {
+		return 0, fmt.Errorf("store: counting audit log: %w", err)
+	}
+	return total, nil
+}
+
 // GetSpec returns a stored interface. An empty wasmHash selects the version
 // the contract currently runs.
 func (p *Postgres) GetSpec(ctx context.Context, network, contractID, wasmHash string) (*Spec, error) {

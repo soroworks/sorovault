@@ -190,6 +190,13 @@ type upgradeListResponse struct {
 	Offset   int             `json:"offset"`
 }
 
+type auditListResponse struct {
+	Entries []store.AuditEntry `json:"entries"`
+	Total   int                `json:"total"`
+	Limit   int                `json:"limit"`
+	Offset  int                `json:"offset"`
+}
+
 type errorResponse struct {
 	Error string `json:"error"`
 }

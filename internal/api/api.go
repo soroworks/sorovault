@@ -152,6 +152,7 @@ func (s *Server) Routes() chi.Router {
 	r.Get("/contracts/{id}/client.py", cacheable(s.getPythonClient))
 	r.Get("/keys", s.getKeys)
 	r.Get("/stats", s.getStats)
+	r.Get("/audit", s.readProtected(s.listAudit))
 	r.Get("/upgrades", s.listUpgrades)
 	r.Get("/upgrades.atom", s.upgradesAtom)
 	r.Get("/openapi.json", serveOpenAPI)
@@ -195,12 +196,13 @@ func (s *Server) requireBearer(next http.HandlerFunc) http.HandlerFunc {
 				"Authorization header must be Bearer authentication")
 			return
 		}
-		if !s.tokenMatches(token) {
+		name, matched := s.tokenMatches(token)
+		if !matched {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="sorovault"`)
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		next(w, r)
+		next(w, r.WithContext(withTokenName(r.Context(), name)))
 	}
 }
 
@@ -209,12 +211,20 @@ func (s *Server) requireBearer(next http.HandlerFunc) http.HandlerFunc {
 // apart from failure by how early it stopped. Every comparison is
 // constant time; lengths differ, subtleties and all, so timing leaks
 // nothing more than the response does.
-func (s *Server) tokenMatches(presented string) bool {
+func (s *Server) tokenMatches(presented string) (string, bool) {
 	matches := 0
-	for _, token := range s.tokens {
-		matches |= subtle.ConstantTimeCompare([]byte(presented), []byte(token))
+	var matchedName string
+	for i, raw := range s.tokens {
+		fallback := "token-" + strconv.Itoa(i+1)
+		name, secret := parseTokenName(raw, fallback)
+		hit := subtle.ConstantTimeCompare([]byte(presented), []byte(secret)) |
+			subtle.ConstantTimeCompare([]byte(presented), []byte(raw))
+		if hit == 1 {
+			matchedName = name
+		}
+		matches |= hit
 	}
-	return matches == 1
+	return matchedName, matches == 1
 }
 
 var commitHash = regexp.MustCompile(`^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$`)
@@ -509,6 +519,7 @@ func (s *Server) updateContractSource(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	s.recordAudit(r, store.AuditActionUpdateSource, network, contractID)
 	contract, err := s.reg.Store().GetContract(r.Context(), network, contractID)
 	if err != nil {
 		s.fail(w, r, err)
@@ -570,6 +581,7 @@ func (s *Server) verifyPublisher(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	s.recordAudit(r, store.AuditActionVerifyPublisher, contract.Network, contract.ContractID)
 	writeJSON(w, http.StatusOK, contract)
 }
 
@@ -614,6 +626,7 @@ func (s *Server) setContractDeprecation(w http.ResponseWriter, r *http.Request) 
 		s.fail(w, r, err)
 		return
 	}
+	s.recordAudit(r, store.AuditActionSetDeprecation, network, contractID)
 	contract, err := s.reg.Store().GetContract(r.Context(), network, contractID)
 	if err != nil {
 		s.fail(w, r, err)
@@ -636,6 +649,7 @@ func (s *Server) clearContractDeprecation(w http.ResponseWriter, r *http.Request
 		s.fail(w, r, err)
 		return
 	}
+	s.recordAudit(r, store.AuditActionClearDeprecation, network, contractID)
 	contract, err := s.reg.Store().GetContract(r.Context(), network, contractID)
 	if err != nil {
 		s.fail(w, r, err)
@@ -1446,6 +1460,7 @@ func (s *Server) registerContract(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	s.recordAudit(r, store.AuditActionRegister, result.Contract.Network, result.Contract.ContractID)
 
 	status := http.StatusOK
 	if result.Created {
@@ -1525,6 +1540,7 @@ func (s *Server) registerOne(r *http.Request, contractID string) batchResult {
 			Error:      message,
 		}
 	}
+	s.recordAudit(r, store.AuditActionRegister, result.Contract.Network, result.Contract.ContractID)
 
 	status := batchStatusUnchanged
 	switch {
@@ -1551,6 +1567,7 @@ func (s *Server) refreshContract(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	s.recordAudit(r, store.AuditActionRefresh, result.Contract.Network, result.Contract.ContractID)
 	writeJSON(w, http.StatusOK, result)
 }
 
