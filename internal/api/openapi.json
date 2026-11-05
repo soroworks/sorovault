@@ -506,6 +506,21 @@
         }
       }
     },
+    "/api/upgrades/stream": {
+      "get": {
+        "summary": "Stream interface upgrades as server-sent events",
+        "description": "Streams new contract interface upgrades as `text/event-stream` (`event: upgrade`) as they are recorded. Reconnecting with `Last-Event-ID` replays missed upgrades from the feed in chronological order before live events arrive.",
+        "operationId": "streamUpgrades",
+        "parameters": [
+          { "$ref": "#/components/parameters/network" },
+          { "name": "Last-Event-ID", "in": "header", "description": "Event ID of the last upgrade received (`urn:sorovault:upgrade:<network>:<contract_id>:<new_wasm_hash>`); missed upgrades since that event are replayed first.", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "A server-sent event stream of upgrade events.", "content": { "text/event-stream": { "schema": { "type": "string" } } } },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
     "/api/upgrades.atom": {
       "get": {
         "summary": "Recent interface upgrades as an Atom feed",
