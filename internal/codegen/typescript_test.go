@@ -478,3 +478,70 @@ func TestTypeScriptParameterDocumentation(t *testing.T) {
 	assert.NotContains(t, got, "@param args.memo", "undocumented parameters should not emit tags")
 	assert.NotContains(t, got, " * @param args.amount Amount in stroops. */", "parameter docs must escape comment terminators")
 }
+
+func TestTypeScriptEventDataFormatsAndCollision(t *testing.T) {
+	t.Parallel()
+
+	t.Run("single-value data format", func(t *testing.T) {
+		iface := &model.Interface{
+			Events: []model.Event{{
+				Name:   "Mint",
+				Prefix: []string{"Mint", "v1"},
+				Params: []model.EventParam{
+					{Name: "to", Type: model.Scalar(model.KindAddress), Location: "topic-list"},
+					{Name: "amount", Type: model.Scalar(model.KindI128), Location: "data"},
+				},
+				DataFormat: "single-value",
+			}},
+		}
+		got, err := codegen.TypeScript(iface, src)
+		require.NoError(t, err)
+		assert.Contains(t, got, `export const MintEventTopics = ["Mint", "v1"] as const;`)
+		assert.Contains(t, got, "export interface Mint {\n  topics: {\n    to: string;\n  };\n  data: sdk.i128;\n}")
+	})
+
+	t.Run("vec data format", func(t *testing.T) {
+		iface := &model.Interface{
+			Events: []model.Event{{
+				Name:   "Swap",
+				Prefix: []string{"swap"},
+				Params: []model.EventParam{
+					{Name: "trader", Type: model.Scalar(model.KindAddress), Location: "topic-list"},
+					{Name: "in_amount", Type: model.Scalar(model.KindI128), Location: "data"},
+					{Name: "out_amount", Type: model.Scalar(model.KindI128), Location: "data"},
+				},
+				DataFormat: "vec",
+			}},
+		}
+		got, err := codegen.TypeScript(iface, src)
+		require.NoError(t, err)
+		assert.Contains(t, got, `export const SwapEventTopics = ["swap"] as const;`)
+		assert.Contains(t, got, "export interface Swap {\n  topics: {\n    trader: string;\n  };\n  data: readonly [sdk.i128, sdk.i128];\n}")
+	})
+
+	t.Run("map data format and type name collision", func(t *testing.T) {
+		iface := &model.Interface{
+			Types: model.Types{
+				Structs: []model.Struct{{
+					Name:   "Transfer",
+					Fields: []model.StructField{{Name: "amount", Type: model.Scalar(model.KindI128)}},
+				}},
+			},
+			Events: []model.Event{{
+				Name:   "Transfer",
+				Prefix: []string{"transfer"},
+				Params: []model.EventParam{
+					{Name: "from", Type: model.Scalar(model.KindAddress), Location: "topic-list"},
+					{Name: "to", Type: model.Scalar(model.KindAddress), Location: "topic-list"},
+					{Name: "amount", Type: model.Scalar(model.KindI128), Location: "data"},
+				},
+				DataFormat: "map",
+			}},
+		}
+		got, err := codegen.TypeScript(iface, src)
+		require.NoError(t, err)
+		assert.Contains(t, got, "export interface Transfer {\n  amount: sdk.i128;\n}")
+		assert.Contains(t, got, `export const TransferEventTopics = ["transfer"] as const;`)
+		assert.Contains(t, got, "export interface TransferEvent {\n  topics: {\n    from: string;\n    to: string;\n  };\n  data: {\n    amount: sdk.i128;\n  };\n}")
+	})
+}
