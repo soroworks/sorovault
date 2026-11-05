@@ -46,6 +46,7 @@ const (
 
 type registerRequest struct {
 	ContractID string `json:"contract_id"`
+	Name       string `json:"name,omitempty"`
 }
 
 type batchRegisterRequest struct {
@@ -81,6 +82,10 @@ type batchResponse struct {
 type sourceRequest struct {
 	SourceURL    string `json:"source_url"`
 	SourceCommit string `json:"source_commit,omitempty"`
+}
+
+type nameRequest struct {
+	Name *string `json:"name"`
 }
 
 type listResponse struct {

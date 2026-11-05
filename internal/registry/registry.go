@@ -264,7 +264,17 @@ func (r *Registry) release() {
 // contract is simply re-verified and its last_refreshed bumped, which makes
 // the operation idempotent and lets it double as an explicit refresh.
 func (r *Registry) Register(ctx context.Context, contractID string) (*Result, error) {
+	return r.RegisterNamed(ctx, contractID, "")
+}
+
+// RegisterNamed is Register with an optional human-readable name attached to
+// the contract. An empty name leaves any existing name untouched.
+func (r *Registry) RegisterNamed(ctx context.Context, contractID, name string) (*Result, error) {
 	if err := stellar.ValidateContractID(contractID); err != nil {
+		return nil, err
+	}
+	validatedName, err := store.ValidateName(name)
+	if err != nil {
 		return nil, err
 	}
 
@@ -310,6 +320,7 @@ func (r *Registry) Register(ctx context.Context, contractID string) (*Result, er
 		ContractID:      contractID,
 		Network:         network,
 		CurrentWasmHash: contract.WasmHash,
+		Name:            validatedName,
 		ObservedLedger:  ledger,
 	}
 	if err := r.store.Save(ctx, record, iface); err != nil {

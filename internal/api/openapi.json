@@ -71,7 +71,10 @@
           "required": true,
           "content": { "application/json": { "schema": {
             "type": "object",
-            "properties": { "contract_id": { "$ref": "#/components/schemas/ContractID" } },
+            "properties": {
+              "contract_id": { "$ref": "#/components/schemas/ContractID" },
+              "name": { "type": "string", "maxLength": 100, "description": "Optional human-readable name for the contract." }
+            },
             "required": ["contract_id"],
             "additionalProperties": false
           }, "examples": { "zkvote": { "value": { "contract_id": "CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN" } } } } }
@@ -180,6 +183,19 @@
         "responses": {
           "200": { "description": "The interface. When the registry signs, the response carries `X-SoroVault-Attestation` and `X-SoroVault-Key-Id` headers.", "headers": { "X-SoroVault-Attestation": { "$ref": "#/components/headers/Attestation" }, "X-SoroVault-Key-Id": { "$ref": "#/components/headers/KeyId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ContractInterface" }, "examples": { "zkvote": { "$ref": "#/components/examples/ContractInterface" } } } } },
           "304": { "$ref": "#/components/responses/NotModified" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "patch": {
+        "summary": "Rename a contract",
+        "description": "Sets or updates the human-readable name of a registered contract.",
+        "operationId": "updateContractName",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/id" }, { "$ref": "#/components/parameters/network" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NameRequest" } } } },
+        "responses": {
+          "200": { "description": "Updated contract metadata.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Contract" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
           "404": { "$ref": "#/components/responses/NotFound" }
         }
       }
@@ -940,6 +956,14 @@
           "source_commit": { "type": "string", "pattern": "^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$" }
         },
         "required": ["source_url"],
+        "additionalProperties": false
+      },
+      "NameRequest": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 100, "description": "Human-readable name for the contract." }
+        },
+        "required": ["name"],
         "additionalProperties": false
       },
       "VerifyRequest": {

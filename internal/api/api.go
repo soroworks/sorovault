@@ -136,6 +136,7 @@ func (s *Server) Routes() chi.Router {
 	r.Post("/wasm/{hash}", s.write(s.catalogWasm))
 	r.Get("/wasm/{hash}/contracts", s.listWasmContracts)
 	r.Get("/contracts/{id}", cacheable(s.getContract))
+	r.Patch("/contracts/{id}", s.write(s.updateContractName))
 	r.Put("/contracts/{id}/source", s.write(s.updateContractSource))
 	r.Post("/contracts/{id}/verify", s.write(s.verifyPublisher))
 	r.Put("/contracts/{id}/deprecation", s.write(s.setContractDeprecation))
@@ -506,6 +507,43 @@ func (s *Server) updateContractSource(w http.ResponseWriter, r *http.Request) {
 	}
 	contractID := chi.URLParam(r, "id")
 	if err := s.reg.Store().UpdateSource(r.Context(), network, contractID, sourceURL, commit); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	contract, err := s.reg.Store().GetContract(r.Context(), network, contractID)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, contract)
+}
+
+func (s *Server) updateContractName(w http.ResponseWriter, r *http.Request) {
+	var req nameRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Name == nil {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	name, err := store.ValidateName(*req.Name)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "name must not be empty")
+		return
+	}
+	network, err := s.network(r)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	contractID := chi.URLParam(r, "id")
+	if err := s.reg.Store().UpdateName(r.Context(), network, contractID, name); err != nil {
 		s.fail(w, r, err)
 		return
 	}
@@ -1441,7 +1479,7 @@ func (s *Server) registerContract(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.reg.Register(r.Context(), contractID)
+	result, err := s.reg.RegisterNamed(r.Context(), contractID, req.Name)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -1701,7 +1739,7 @@ func (s *Server) errorStatus(r *http.Request, err error) (int, string) {
 	case errors.Is(err, registry.ErrBusy):
 		return http.StatusServiceUnavailable, err.Error()
 
-	case errors.Is(err, registry.ErrInvalidClaim):
+	case errors.Is(err, registry.ErrInvalidClaim), errors.Is(err, store.ErrInvalidName):
 		return http.StatusBadRequest, err.Error()
 
 	case errors.Is(err, registry.ErrNotDeployer):
