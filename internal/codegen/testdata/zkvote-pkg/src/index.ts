@@ -39,6 +39,16 @@ export interface VoteParams {
   voting_question: string;
 }
 
+export const VotedEventTopics = ["voted"] as const;
+export interface Voted {
+  topics: {
+    voter: string;
+  };
+  data: {
+    proposal_index: sdk.u32;
+  };
+}
+
 /** Contract error codes, as reported by the host. */
 export const Errors: Record<number, { message: string }> = {
   1: { message: "AlreadyInitialized" },
