@@ -195,6 +195,67 @@ func runStoreSuite(t *testing.T, newStore factory) {
 		require.Len(t, page.Contracts, 1)
 		assert.Equal(t, idA, page.Contracts[0].ContractID)
 		assert.Equal(t, []string{"sep41"}, page.Contracts[0].Implements)
+		assert.Equal(t, []string{"token"}, page.Contracts[0].Tags,
+			"detected token contracts are tagged automatically")
+	})
+
+	t.Run("tags are validated, filtered, preserved across refresh and exported", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "hash1"), iface("swap")))
+		require.NoError(t, s.Save(ctx, contract(idB, "testnet", "hash2"), standardInterface()))
+
+		// Token contract is auto-tagged "token".
+		gotB, err := s.GetContract(ctx, "testnet", idB)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"token"}, gotB.Tags)
+
+		// SetTags normalizes to lowercase, deduplicates and sorts.
+		require.NoError(t, s.SetTags(ctx, "testnet", idA, []string{"DEX", "Amm", "dex"}))
+		gotA, err := s.GetContract(ctx, "testnet", idA)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"amm", "dex"}, gotA.Tags)
+
+		// Refresh preserves existing tags.
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "hash3"), iface("swap_v2")))
+		gotA, err = s.GetContract(ctx, "testnet", idA)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"amm", "dex"}, gotA.Tags, "refresh must preserve tags")
+
+		// Filtering by single and multiple tags (case-insensitive).
+		page, err := s.ListContracts(ctx, store.ListFilter{Tags: []string{"DEX"}})
+		require.NoError(t, err)
+		require.Equal(t, 1, page.Total)
+		assert.Equal(t, idA, page.Contracts[0].ContractID)
+
+		page, err = s.ListContracts(ctx, store.ListFilter{Tags: []string{"amm", "dex"}})
+		require.NoError(t, err)
+		require.Equal(t, 1, page.Total)
+
+		page, err = s.ListContracts(ctx, store.ListFilter{Tags: []string{"amm", "token"}})
+		require.NoError(t, err)
+		assert.Zero(t, page.Total)
+
+		// Snapshot export/import preserves tags.
+		snap, err := s.Export(ctx)
+		require.NoError(t, err)
+		other := newStore(t)
+		require.NoError(t, other.Import(ctx, snap, false))
+		importedA, err := other.GetContract(ctx, "testnet", idA)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"amm", "dex"}, importedA.Tags)
+
+		// Clearing tags.
+		require.NoError(t, s.SetTags(ctx, "testnet", idA, []string{}))
+		gotA, err = s.GetContract(ctx, "testnet", idA)
+		require.NoError(t, err)
+		assert.Empty(t, gotA.Tags)
+
+		// Invalid tags and unknown contracts are rejected.
+		assert.ErrorIs(t, s.SetTags(ctx, "testnet", idA, []string{""}), store.ErrInvalidTag)
+		assert.ErrorIs(t, s.SetTags(ctx, "testnet", idA, []string{"bad tag!"}), store.ErrInvalidTag)
+		assert.ErrorIs(t, s.SetTags(ctx, "testnet", "CDZZNOPE", []string{"dex"}), store.ErrNotFound)
 	})
 	t.Run("catalogued wasm does not require a contract", func(t *testing.T) {
 		s := newStore(t)

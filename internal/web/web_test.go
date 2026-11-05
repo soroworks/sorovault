@@ -863,3 +863,32 @@ func TestContractPageShowsDeployerAndVerification(t *testing.T) {
 		assert.Contains(t, body, "for an earlier version")
 	})
 }
+
+func TestTagsDisplayAndFilterInBrowseUI(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	h := newHarness(t)
+	h.register(t, idA)
+	h.register(t, idB)
+	require.NoError(t, h.store.SetTags(ctx, "testnet", idA, []string{"governance", "zk"}))
+
+	// Index shows tag badges linking to /?tag=...
+	_, body := h.get(t, "/")
+	assert.Contains(t, body, `href="/?tag=governance">governance</a>`)
+	assert.Contains(t, body, `href="/?tag=zk">zk</a>`)
+
+	// Contract detail page shows tags linking to /?tag=...
+	_, detail := h.get(t, "/contracts/"+idA)
+	assert.Contains(t, detail, "<dt>Tags</dt>")
+	assert.Contains(t, detail, `href="/?tag=governance">governance</a>`)
+
+	// Filtering by tag on / and /partials/contracts shows only matching contracts.
+	_, filtered := h.get(t, "/?tag=governance")
+	assert.Contains(t, filtered, idA)
+	assert.NotContains(t, filtered, idB)
+
+	_, partial := h.get(t, "/partials/contracts?tag=governance")
+	assert.Contains(t, partial, idA)
+	assert.NotContains(t, partial, idB)
+}
