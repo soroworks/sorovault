@@ -409,6 +409,19 @@ added without touching the registry.
 or whose lookup failed. It only looks at contracts still without a creator, so
 it is safe to run repeatedly.
 
+For example, a contract whose deployer is known answers:
+
+```console
+$ curl -s localhost:8080/api/contracts/CDZZ…4PAN | jq .origin
+{
+  "known": true,
+  "creator": "GABC…XYZ",
+  "created_ledger": 4242
+}
+```
+
+When the origin could not be determined, the same request answers `"origin": {"known": false}` instead. Running `sorovault backfill-origins` retries the lookup for contracts that lack one.
+
 ### Verified publishers
 
 Anyone can register a contract and attach a source link, so a listing alone
