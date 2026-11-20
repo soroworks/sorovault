@@ -65,3 +65,46 @@ func TestMCPMethodClient(t *testing.T) {
 	require.NoError(t, json.Unmarshal(result, &resp))
 	require.Equal(t, "ok", resp["status"])
 }
+
+func TestMCPHandleEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		method      mcp.Method
+		params      *mcp.Params
+		expectError bool
+	}{
+		{
+			name:        "unknown method",
+			method:      mcp.Method("unknown"),
+			params:      &mcp.Params{Method: mcp.Method("unknown"), ID: 1, Data: json.RawMessage(`{}`)},
+			expectError: true,
+		},
+		{
+			name:        "nil params",
+			method:      mcp.MethodSearch,
+			params:      nil,
+			expectError: true,
+		},
+		{
+			name:        "invalid json data",
+			method:      mcp.MethodSearch,
+			params:      &mcp.Params{Method: mcp.MethodSearch, ID: 2, Data: json.RawMessage(`invalid-json`)},
+			expectError: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			server := mcp.NewServer()
+			_, err := server.Handle(context.Background(), tc.method, tc.params)
+			if tc.expectError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}

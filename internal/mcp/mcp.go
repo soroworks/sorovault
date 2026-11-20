@@ -56,6 +56,9 @@ func NewServer() Server {
 
 // Handle implements the Server interface.
 func (s *mcpServer) Handle(ctx context.Context, method Method, params *Params) (json.RawMessage, error) {
+	if params == nil {
+		return nil, fmt.Errorf("mcp: params are required")
+	}
 	switch method {
 	case MethodSearch:
 		return s.handleSearch(params)
