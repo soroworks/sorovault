@@ -281,3 +281,37 @@ func TestCheckPassphrase(t *testing.T) {
 	require.ErrorIs(t, err, registry.ErrNetworkMismatch)
 	assert.Contains(t, err.Error(), stellar.NetworkPublic)
 }
+
+// TestCheckPassphraseEdgeCases pins the comparison at its boundaries: the
+// match is exact, so near-misses must be refused, and only an empty
+// expectation opts out of the guard.
+func TestCheckPassphraseEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		got      string
+		want     string
+		mismatch bool
+	}{
+		{"both empty", "", "", false},
+		{"empty expectation accepts anything", stellar.NetworkPublic, "", false},
+		{"empty report against an expectation", "", stellar.NetworkTestnet, true},
+		{"case differs", "test sdf network ; september 2015", stellar.NetworkTestnet, true},
+		{"trailing whitespace differs", stellar.NetworkTestnet + " ", stellar.NetworkTestnet, true},
+		{"whitespace-only expectation is not empty", stellar.NetworkTestnet, " ", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := registry.CheckPassphrase(tt.got, tt.want)
+			if tt.mismatch {
+				require.ErrorIs(t, err, registry.ErrNetworkMismatch,
+					"the passphrase comparison must be exact")
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
+}
