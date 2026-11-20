@@ -65,3 +65,16 @@ func TestMCPMethodClient(t *testing.T) {
 	require.NoError(t, json.Unmarshal(result, &resp))
 	require.Equal(t, "ok", resp["status"])
 }
+
+func TestMCPErrorJSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := mcp.MCPError{Code: -32601, Message: "method not found"}
+
+	data, err := json.Marshal(original)
+	require.NoError(t, err)
+
+	var decoded mcp.MCPError
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	require.Equal(t, original, decoded, "MCPError must survive a JSON round trip unchanged")
+}
