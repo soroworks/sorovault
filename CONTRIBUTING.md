@@ -132,6 +132,17 @@ provenance is recorded in
 [`internal/spec/testdata/README.md`](internal/spec/testdata/README.md), and a
 test checks its SHA-256 against the on-chain hash it is named for.
 
+For example, a test that needs the fixture reads the checked-in bytes and feeds
+them to the same decoder the fetch path uses — no network involved:
+
+```go
+module, err := os.ReadFile("testdata/zkvote.wasm")
+require.NoError(t, err)
+
+iface, err := spec.XDRDecoder{}.Decode(module)
+require.NoError(t, err)
+```
+
 If you intentionally change the ABI output shape, regenerate the golden file:
 
 ```console
@@ -149,11 +160,43 @@ than hand-rolling a module — real contracts have the quirks that matter. Keep
 it small, and add it to the testdata README with its contract ID, hash and the
 date you fetched it.
 
+For example, this is how the existing fixture can be fetched from testnet —
+substitute the ID of the contract you need, and copy the result into testdata
+under a descriptive name:
+
+```console
+$ stellar contract fetch \
+    --network-passphrase 'Test SDF Network ; September 2015' \
+    --rpc-url https://soroban-testnet.stellar.org \
+    --id CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN \
+    --out-file /tmp/zkvote.wasm
+$ sha256sum /tmp/zkvote.wasm
+c618dae264864ccf446a3c7db27da80c7c83e840131242cc2fe9cd32a2a20781  /tmp/zkvote.wasm
+```
+
+Record that hash, the contract ID, the SDK version and the fetch date in the
+testdata README.
+
 ## Changing the ABI JSON
 
 `internal/model` is the project's public contract; other tools parse it. Adding
 an optional field is fine. Renaming or removing one, or changing a type, is a
 breaking change and needs `model.ABIVersion` bumped and a note in the README.
+
+For example, adding an optional `"since"` field to a function leaves
+`abi_version` at `"1"`. Renaming `"inputs"` to `"arguments"` would break every
+reader that expects the old name, so the change has to be marked:
+
+```diff
+-  "abi_version": "1",
+-  "inputs": []
++  "abi_version": "2",
++  "arguments": []
+```
+
+That means changing `model.ABIVersion` to `"2"` in `internal/model/abi.go` and
+describing the new shape in the README's ABI section. Adding the optional field
+needs neither.
 
 If you find yourself wanting to break it, open an issue first.
 
@@ -169,6 +212,23 @@ Useful primary sources:
 - [SEP-48, contract interface specification](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0048.md)
 - [`stellar/go-stellar-sdk`](https://github.com/stellar/go-stellar-sdk) — the `xdr` and `clients/rpcclient` packages
 - [Stellar RPC `getLedgerEntries`](https://developers.stellar.org/docs/data/apis/rpc/api-reference/methods/getLedgerEntries)
+
+For example, print the toolchain and SDK versions, ask the live endpoint which
+network and protocol it serves, and run the opt-in smoke test over the real
+fetch path (a plain `go test ./...` skips it, so it never needs the network):
+
+```console
+$ go version
+$ go list -m github.com/stellar/go-stellar-sdk
+$ curl -s https://soroban-testnet.stellar.org \
+    -H 'content-type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"getNetworkInfo","params":{}}' \
+    | jq '.result | {protocol: .protocol_version, passphrase}'
+$ SOROVAULT_LIVE=1 go test -run TestLiveSmoke -v ./internal/stellar
+```
+
+Compare what those print with the README's verification table and update the
+table with what you actually observed, including the date.
 
 ## Licence
 
