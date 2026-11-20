@@ -174,3 +174,9 @@ Useful primary sources:
 
 By contributing you agree that your contributions are licensed under
 Apache-2.0, the same as the project.
+
+For new source files, a short SPDX header is sufficient:
+
+```go
+// SPDX-License-Identifier: Apache-2.0
+```

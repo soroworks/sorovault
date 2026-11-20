@@ -70,6 +70,13 @@ rather than recalled. Verified **2026-08-07**:
 | soroban-sdk (test fixture) | 25.3.0 | the contract in `internal/spec/testdata` |
 | [SEP-48](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0048.md) | 1.1.0 | contract interface specification |
 
+For example, check the local Go toolchain and the pinned SDK dependency with:
+
+```console
+$ go version
+$ go list -m github.com/stellar/go-stellar-sdk
+```
+
 > **On the SDK:** the original plan named `github.com/stellar/go`. That module is
 > now formally deprecated — its `go.mod` carries
 > `// Deprecated: Use github.com/stellar/go-stellar-sdk instead` — so SoroVault
@@ -164,6 +171,13 @@ $ sha256sum -c checksums.txt --ignore-missing
 $ jq '.packages[] | {name, version}' sorovault_1.2.3_linux_amd64.tar.gz.sbom.json
 ```
 
+For example, download the Linux archive and its verification files for a release:
+
+```console
+$ gh release download 1.2.3 --repo soroworks/sorovault \
+    --pattern 'sorovault_1.2.3_linux_amd64.tar.gz*'
+```
+
 Container images are published as `ghcr.io/soroworks/sorovault:<version>` and
 `:latest` for `linux/amd64` and `linux/arm64`.
 
@@ -179,6 +193,16 @@ $ kubectl create secret generic sorovault-db \\
   --from-literal=DATABASE_URL='postgres://sorovault:password@postgres:5432/sorovault?sslmode=disable'
 $ helm upgrade --install sorovault ./deploy/helm/sorovault \\
   --set database.existingSecret=sorovault-db
+```
+
+The equivalent settings can be kept in a values file:
+
+```yaml
+database:
+  existingSecret: sorovault-db
+config:
+  rpcUrl: https://soroban-testnet.stellar.org
+  networkPassphrase: Test SDF Network ; September 2015
 ```
 
 The secret name and key, image, service, and SoroVault environment settings can
