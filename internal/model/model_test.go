@@ -2,6 +2,7 @@ package model_test
 
 import (
 	"encoding/json"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -93,6 +94,56 @@ func TestRender(t *testing.T) {
 			name: "vec with nil element",
 			in:   model.Type{Kind: model.KindVec},
 			want: "Vec<?>",
+		},
+		{
+			name: "zero value type",
+			in:   model.Type{},
+			want: "",
+		},
+		{
+			name: "unknown kind falls back to the kind string",
+			in:   model.Type{Kind: "future_kind"},
+			want: "future_kind",
+		},
+		{
+			name: "bytesN zero length",
+			in:   model.Type{Kind: model.KindBytesN},
+			want: "BytesN<0>",
+		},
+		{
+			name: "bytesN max uint32 length",
+			in:   model.Type{Kind: model.KindBytesN, N: math.MaxUint32},
+			want: "BytesN<4294967295>",
+		},
+		{
+			name: "udt with empty name",
+			in:   model.Type{Kind: model.KindUDT},
+			want: "",
+		},
+		{
+			name: "map with nil key and value",
+			in:   model.Type{Kind: model.KindMap},
+			want: "Map<?, ?>",
+		},
+		{
+			name: "result with nil arms",
+			in:   model.Type{Kind: model.KindResult},
+			want: "Result<?, ?>",
+		},
+		{
+			name: "option with nil inner",
+			in:   model.Type{Kind: model.KindOption},
+			want: "Option<?>",
+		},
+		{
+			name: "single-element tuple has no trailing comma",
+			in:   model.Type{Kind: model.KindTuple, Elements: []model.Type{model.Scalar(model.KindU32)}},
+			want: "(u32)",
+		},
+		{
+			name: "stale Display is ignored",
+			in:   model.Type{Kind: model.KindU32, Display: "wrong"},
+			want: "u32",
 		},
 	}
 
