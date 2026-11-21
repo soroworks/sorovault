@@ -151,3 +151,81 @@ func TestMemoryTiedVersionsStayConsistentWithGet(t *testing.T) {
 	assert.Equal(t, "v2", got.Interface.Functions[0].Name,
 		"the latest save points the contract at its new interface")
 }
+
+// TestSetClockEdgeCases covers table-driven edge cases for SetClock:
+// empty/zero time, boundary values (Unix epoch, far future), and pre-epoch time.
+func TestSetClockEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		clock    func() time.Time
+		wantTime time.Time
+	}{
+		{
+			name: "zero value time boundary",
+			clock: func() time.Time {
+				return time.Time{}
+			},
+			wantTime: time.Time{},
+		},
+		{
+			name: "unix epoch boundary",
+			clock: func() time.Time {
+				return time.Unix(0, 0).UTC()
+			},
+			wantTime: time.Unix(0, 0).UTC(),
+		},
+		{
+			name: "far future boundary",
+			clock: func() time.Time {
+				return time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC)
+			},
+			wantTime: time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC),
+		},
+		{
+			name: "pre-epoch boundary",
+			clock: func() time.Time {
+				return time.Date(1969, 12, 31, 23, 59, 59, 0, time.UTC)
+			},
+			wantTime: time.Date(1969, 12, 31, 23, 59, 59, 0, time.UTC),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			m := NewMemory()
+			m.SetClock(tt.clock)
+
+			contractID := "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+			c := Contract{
+				ContractID:      contractID,
+				Network:         "testnet",
+				CurrentWasmHash: "hash-edge-test",
+			}
+			err := m.Save(ctx, c, newerTestIface("edge_case"))
+			require.NoError(t, err)
+
+			got, err := m.GetContract(ctx, "testnet", contractID)
+			require.NoError(t, err)
+			assert.True(t, got.FirstSeen.Equal(tt.wantTime), "expected FirstSeen to match clock output")
+			assert.True(t, got.LastRefreshed.Equal(tt.wantTime), "expected LastRefreshed to match clock output")
+
+			versions, err := m.ListVersions(ctx, "testnet", contractID)
+			require.NoError(t, err)
+			require.NotEmpty(t, versions)
+			assert.True(t, versions[0].DecodedAt.Equal(tt.wantTime), "expected DecodedAt to match clock output")
+
+			subID, err := m.Subscribe(ctx, "testnet", []string{contractID}, "https://example.com/webhook")
+			require.NoError(t, err)
+			require.NotEmpty(t, subID)
+
+			sub, err := m.GetSubscription(ctx, subID)
+			require.NoError(t, err)
+			assert.True(t, sub.CreatedAt.Equal(tt.wantTime), "expected subscription CreatedAt to match clock output")
+		})
+	}
+}
