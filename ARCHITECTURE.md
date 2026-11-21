@@ -9,6 +9,33 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup and conventions. The README's
 [How it fits together](README.md#how-it-fits-together) is the short version;
 this document is the contributor's version.
 
+## The data model
+
+Contracts and their decoded interfaces are stored using a canonical JSON representation defined in `internal/model`. For example, a stored interface structure looks like this:
+
+```json
+{
+  "abi_version": "1",
+  "functions": [
+    {
+      "name": "get_total_votes",
+      "inputs": [],
+      "outputs": [
+        {
+          "kind": "u64"
+        }
+      ]
+    }
+  ],
+  "types": {
+    "structs": [],
+    "unions": [],
+    "enums": [],
+    "error_enums": []
+  }
+}
+```
+
 ## The shape of the system
 
 ```

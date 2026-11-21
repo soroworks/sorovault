@@ -56,6 +56,12 @@ invariants behind them, see [ARCHITECTURE.md](ARCHITECTURE.md).
 | read contracts from somewhere else | implement `stellar.Fetcher` |
 | change the browse UI | `internal/web` |
 
+For example, to add an optional field to the API response for contracts, inspect the handler and model packages like this:
+
+```go
+// internal/api/api.go handles the endpoint request and populates internal/model.
+```
+
 ## Good first issues
 
 These are real gaps, roughly easiest first:
