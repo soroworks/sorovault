@@ -166,3 +166,43 @@ func TestGoDeclaresContractTypes(t *testing.T) {
 	assert.Regexp(t, `StatusOpen\s+Status = 0`, got)
 	assert.Regexp(t, `StatusClosed\s+Status = 1`, got)
 }
+
+// TestNewClient covers NewClient generation and invocation methods for the Go client.
+func TestNewClient(t *testing.T) {
+	tests := []struct {
+		name       string
+		contractID string
+		network    string
+		wantError  bool
+	}{
+		{
+			name:       "happy path valid contract id",
+			contractID: "CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN",
+			network:    "testnet",
+			wantError:  false,
+		},
+		{
+			name:       "error path invalid contract id",
+			contractID: "INVALID_CONTRACT_ID",
+			network:    "testnet",
+			wantError:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			iface := &model.Interface{
+				Functions: []model.Function{
+					{Name: "ping"},
+				},
+			}
+			got, err := codegen.Go(iface, src, "zkvote")
+			require.NoError(t, err)
+
+			assert.Contains(t, got, "func NewClient(contractID, network string) *Client")
+			assert.Contains(t, got, "func (client *Client) Ping()")
+		})
+	}
+}
