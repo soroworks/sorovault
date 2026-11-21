@@ -233,6 +233,56 @@ func TestWriteAuthHidesTheRegisterForm(t *testing.T) {
 	assert.Contains(t, body, "API token")
 }
 
+// TestSetWriteAuthRequiredEdgeCases covers table-driven edge cases for SetWriteAuthRequired
+// and its resulting form behavior and write refusals with various inputs.
+func TestSetWriteAuthRequiredEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		authRequired bool
+		contractID   string
+		wantStatus   int
+		wantSubstr   string
+	}{
+		{
+			name:         "auth required with empty contract id",
+			authRequired: true,
+			contractID:   "",
+			wantStatus:   http.StatusUnauthorized,
+			wantSubstr:   "API token",
+		},
+		{
+			name:         "auth required with boundary invalid contract id",
+			authRequired: true,
+			contractID:   "SHORT",
+			wantStatus:   http.StatusUnauthorized,
+			wantSubstr:   "API token",
+		},
+		{
+			name:         "auth disabled with valid contract id rejects missing origin csrf",
+			authRequired: false,
+			contractID:   idA,
+			wantStatus:   http.StatusForbidden,
+			wantSubstr:   "must be submitted from SoroVault",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarnessWithConfigure(t, func(ui *web.Server) {
+				ui.SetWriteAuthRequired(tt.authRequired)
+			})
+
+			resp, body := h.postForm(t, "/contracts", url.Values{"contract_id": {tt.contractID}}, nil)
+			assert.Equal(t, tt.wantStatus, resp.StatusCode)
+			if tt.wantSubstr != "" {
+				assert.Contains(t, body, tt.wantSubstr)
+			}
+		})
+	}
+}
+
 // TestIndexListsContracts proves a contract that has gone missing is
 // marked in the listing, so a reader can tell it apart from a live one.
 func TestIndexMarksMissingContracts(t *testing.T) {

@@ -72,6 +72,46 @@ func TestCustomSection(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+
+	// Table-driven edge cases for CustomSection (empty input, boundary values, invalid input)
+	EdgeTests := []struct {
+		name    string
+		module  []byte
+		section string
+		wantErr bool
+	}{
+		{
+			name:    "empty module input",
+			module:  nil,
+			section: wasm.SectionContractSpec,
+			wantErr: true,
+		},
+		{
+			name:    "boundary value header only",
+			module:  []byte{0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00},
+			section: wasm.SectionContractSpec,
+			wantErr: true,
+		},
+		{
+			name:    "invalid section size boundary",
+			module:  append(wasmtest.Module(), 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x07),
+			section: wasm.SectionContractSpec,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range EdgeTests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := wasm.CustomSection(tt.module, tt.section)
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
 }
 
 func TestCustomSectionNotFound(t *testing.T) {
