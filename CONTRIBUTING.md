@@ -72,6 +72,14 @@ These are real gaps, roughly easiest first:
    `GET /api/contracts/{id}`. This is a substantial project and deserves an
    issue to discuss the approach before code.
 
+For example, to register a contract via the API when tackling a task:
+
+```bash
+curl -sS -X POST "http://localhost:8080/api/contracts" \
+    -H "content-type: application/json" \
+    -d '{"contract_id":"CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN"}'
+```
+
 Please open an issue before starting on anything large, so nobody duplicates
 work.
 
@@ -86,6 +94,14 @@ Nothing exotic — write Go that looks like the Go already here.
   `fmt.Errorf("store: loading contract %s: %w", id, err)`. Sentinel errors
   (`store.ErrNotFound`, `stellar.ErrNoWasm`) are how callers make decisions —
   add one when a caller would otherwise have to match on a string.
+
+  For example:
+
+  ```go
+  if err != nil {
+      return fmt.Errorf("store: loading contract %s: %w", id, err)
+  }
+  ```
 - **Keep packages narrow.** `internal/model` depends on nothing; keep it that
   way, since it is what external consumers of the ABI mirror.
 - **Log with `slog`**, and pass the logger in rather than reaching for a global.
@@ -108,9 +124,39 @@ Each workflow and job also declares the permissions it needs, and no more:
 `contents: read` is enough for almost every job here, and a job that
 really writes something says so.
 
+For example, a complete CI workflow job looks like this:
+
+```yaml
+name: CI
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+      - name: Test
+        run: go test -race ./...
+```
+
 ## Testing
 
 The rules that matter:
+
+For example, a unit test that verifies a contract function's schema or behavior without network or database dependencies looks like this:
+
+```go
+func TestContractBehavior(t *testing.T) {
+	// Use check-in fixtures or fakes for isolated testing
+	assert.True(t, true, "testing rules must remain offline")
+}
+```
 
 - **`go test ./...` must never need the network or a database.** This is not
   negotiable; it is what keeps the project pleasant to contribute to. Use the
