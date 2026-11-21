@@ -30,8 +30,22 @@ drives `registry.Refresh` on a schedule and is wired in by `serve`.
 
 ## What each package owns
 
+For example, registering a contract and inspecting its functions flows across packages like this:
+
+```console
+$ sorovault add CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN --json
+{
+  "contract_id": "CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN",
+  "network": "testnet",
+  "created": true,
+  "changed": true,
+  "wasm_hash": "c618dae264864ccf446a3c7db27da80c7c83e840131242cc2fe9cd32a2a20781"
+}
+```
+
 | Package | Owns |
 |---|---|
+
 | `cmd/sorovault` | Cobra commands, flag parsing, and the wiring in `app.go` and `serve.go`. `serve` mounts the API, UI and `/healthz`, applies the 60-second request timeout and 15-second shutdown grace, and starts the refresher when `REFRESH_INTERVAL` is positive. |
 | `internal/config` | Environment-only configuration, defaults and validation. The only required setting is `DATABASE_URL` (or `DATABASE_URL_FILE`). |
 | `internal/model` | The ABI types and JSON shape. It depends on nothing else in the project; this is the public contract other tools consume. Empty collections are `[]`, optional fields are omitted, and `ABIVersion` is bumped for a breaking change. |
@@ -56,7 +70,15 @@ Three interfaces are the places to extend without reaching through layers:
 - **`spec.Decoder`** (`internal/spec/spec.go`) — how bytes become an interface.
 - **`store.Store`** (`internal/store/store.go`) — where the registry lives.
 
-Nothing above a seam depends on the implementation below it. That is why the
+Nothing above a seam depends on the implementation below it. For example, decoding raw WASM bytes into a model interface using the decoder seam without touching the network or database looks like this:
+
+```go
+// Decode module bytes using the spec decoder seam directly
+iface, err := spec.XDRDecoder{}.Decode(wasmBytes)
+if err != nil {
+    return fmt.Errorf("failed to decode contract spec: %w", err)
+}
+``` That is why the
 API, registry and refresher tests run without a network or a database: they use
 `stellartest`, a stub decoder, and the in-memory store.
 
@@ -68,6 +90,22 @@ one that is not made to the other will fail that suite.
 
 `POST /api/contracts`, the CLI's `add`, and the browse UI's form all end at
 `registry.Register`:
+
+For example, registering a contract via the HTTP API:
+
+```bash
+curl -sS -X POST "http://localhost:8080/api/contracts" \
+    -H "content-type: application/json" \
+    -d '{"contract_id":"CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN"}'
+```
+
+Sample payload:
+
+```json
+{
+  "contract_id": "CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN"
+}
+```
 
 1. **Validate.** `registry.Register` calls `stellar.ValidateContractID` before
    spending a concurrency slot or an RPC round trip. A malformed strkey is a
@@ -110,6 +148,12 @@ There are two entry points, and they share `registry.Refresh`:
 - `POST /api/contracts/{id}/refresh` refreshes one contract.
 - `internal/refresher` refreshes stale contracts on a schedule. It is started
   by `serve` only when `REFRESH_INTERVAL` is positive.
+
+For example, refreshing a contract explicitly via the API:
+
+```bash
+curl -X POST http://localhost:8080/api/contracts/CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN/refresh?network=testnet
+```
 
 `registry.Refresh` deliberately starts from what is stored:
 
