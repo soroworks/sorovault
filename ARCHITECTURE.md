@@ -174,7 +174,15 @@ catalogued before any contract instance references it.
 ## Invariants to keep
 
 These are the rules the rest of the design assumes. A change that breaks one is
-not a local change.
+not a local change. For example, registering a contract payload ensures the hash matches:
+
+```json
+{
+  "network": "testnet",
+  "contract_id": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXFG47ZGPMZXDGM5JHISD6VJB",
+  "wasm_hash": "a6730332cd939527f54c9ff38287e0e84bfa4d80a9d8d64380eb9a55e119426f"
+}
+```
 
 1. **An interface is identified by its WASM hash.** A given
    `(network, contract_id, wasm_hash)` always describes the same module, so a
@@ -221,6 +229,35 @@ not a local change.
    registration form additionally requires a same-origin `Origin` or `Referer`.
 
 ## Adding a route or changing the ABI
+
+For example, adding a new optional field to a function or modifying its input type requires bumping `model.ABIVersion` in `internal/model/abi.go` and updating the JSON schema definition:
+
+```go
+// internal/model/abi.go
+const ABIVersion = "2"
+```
+
+A sample API payload reflecting the new schema or version structure:
+
+```json
+{
+  "abi_version": "2",
+  "functions": [
+    {
+      "name": "has_voted",
+      "inputs": [
+        {
+          "name": "nullifier",
+          "type": { "kind": "bytes_n", "display": "BytesN<32>", "n": 32 }
+        }
+      ],
+      "outputs": [ { "kind": "bool", "display": "bool" } ]
+    }
+  ],
+  "types": { "structs": [], "unions": [], "enums": [], "error_enums": [] },
+  "events": []
+}
+```
 
 - Add the handler in `internal/api/api.go` and document it in
   `internal/api/openapi.json`. `TestOpenAPICoversEveryRoute` fails if a route

@@ -32,7 +32,23 @@ $ go run ./cmd/sorovault migrate
 $ go run ./cmd/sorovault serve
 ```
 
+For example, to verify everything works by registering the testnet zkvote contract against a running server:
+
+```console
+$ curl -sS -X POST http://localhost:8080/api/contracts \
+    -H 'content-type: application/json' \
+    -d '{"contract_id":"CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN"}'
+```
+
 ## Before you open a pull request
+
+For example, before submitting changes to the codebase, verify that everything builds and tests pass cleanly:
+
+```console
+$ make check
+```
+
+Or run the checks individually:
 
 ```console
 $ make lint        # go vet + gofmt check
