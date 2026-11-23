@@ -1,0 +1,74 @@
+{{define "upgrades.html"}}
+{{template "page_head" "Interface upgrades · SoroVault"}}
+
+<nav class="crumbs"><a href="/">← All contracts</a></nav>
+
+<h1>Interface upgrades</h1>
+<p class="lede">
+  Recent contract interface changes observed by SoroVault, newest first.
+  Follow changes in a feed reader via the <a href="/api/upgrades.atom{{if .Network}}?network={{.Network}}{{end}}">Atom feed</a>
+  or fetch the <a href="/api/upgrades{{if .Network}}?network={{.Network}}{{end}}">JSON API</a>.
+</p>
+
+<form class="search" action="/upgrades" method="get">
+  <label class="network-filter" for="network">
+    <span>Network</span>
+    <select id="network" name="network">
+      <option value=""{{if not .Network}} selected{{end}}>All</option>
+      {{range .Networks}}<option value="{{.}}"{{if eq . $.Network}} selected{{end}}>{{.}}</option>{{end}}
+    </select>
+  </label>
+  <button type="submit">Filter</button>
+</form>
+
+{{if .Total}}
+  <p class="count">{{.Total}} upgrade{{if ne .Total 1}}s{{end}}{{if .Network}} on {{.Network}}{{end}}</p>
+  {{if .Upgrades}}
+  <table class="contracts">
+    <thead>
+      <tr>
+        <th>Contract</th>
+        <th>Network</th>
+        <th>Previous WASM</th>
+        <th>New WASM</th>
+        <th>Observed</th>
+      </tr>
+    </thead>
+    <tbody>
+    {{range .Upgrades}}
+      <tr>
+        <td>
+          <a class="mono" href="/contracts/{{.ContractID}}?network={{.Network}}">{{.ContractID}}</a>
+        </td>
+        <td><span class="badge">{{.Network}}</span></td>
+        <td class="mono dim">
+          <a class="mono" href="/contracts/{{.ContractID}}?network={{.Network}}&amp;wasm_hash={{.OldWasmHash}}" title="View previous interface version">{{short .OldWasmHash 16}}</a>
+        </td>
+        <td class="mono dim">
+          <a class="mono" href="/contracts/{{.ContractID}}?network={{.Network}}&amp;wasm_hash={{.NewWasmHash}}" title="View new interface version">{{short .NewWasmHash 16}}</a>
+        </td>
+        <td class="dim">{{.ObservedAt.UTC.Format "2006-01-02 15:04"}} UTC</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <div class="empty">
+    <p>No upgrades on this page.</p>
+  </div>
+  {{end}}
+  {{if gt .PageCount 1}}
+  <nav class="pagination" aria-label="Upgrade pages">
+    {{if gt .Page 1}}<a href="{{upgradesPageURL .Network (dec .Page)}}">Previous</a>{{end}}
+    <span>Page {{.Page}} of {{.PageCount}}</span>
+    {{if lt .Page .PageCount}}<a href="{{upgradesPageURL .Network (inc .Page)}}">Next</a>{{end}}
+  </nav>
+  {{end}}
+{{else}}
+  <div class="empty">
+    <p>No interface upgrades recorded{{if .Network}} on {{.Network}}{{end}} yet.</p>
+  </div>
+{{end}}
+
+{{template "page_foot"}}
+{{end}}
