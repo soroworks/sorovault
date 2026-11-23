@@ -60,7 +60,7 @@ func TestMigrationRoundtrip(t *testing.T) {
 // and returns a URL for it. Migrating all the way down drops every table, and
 // other packages' tests use the shared database at the same time, so the round
 // trip must not run there.
-func isolatedDatabase(t *testing.T, ctx context.Context, baseURL string) string {
+func isolatedDatabase(t testing.TB, ctx context.Context, baseURL string) string {
 	t.Helper()
 
 	conn, err := pgx.Connect(ctx, baseURL)

@@ -312,6 +312,19 @@ func (p *Postgres) UpdateSource(ctx context.Context, network, contractID, source
 	return nil
 }
 
+// SetName sets an existing contract's display name.
+func (p *Postgres) SetName(ctx context.Context, network, contractID, name string) error {
+	const q = `UPDATE contracts SET name = $3 WHERE network = $1 AND contract_id = $2`
+	tag, err := p.pool.Exec(ctx, q, network, contractID, name)
+	if err != nil {
+		return fmt.Errorf("store: naming contract %s: %w", contractID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: contract %s on %s", ErrNotFound, contractID, network)
+	}
+	return nil
+}
+
 // SetOrigin records who created a contract and in which ledger.
 func (p *Postgres) SetOrigin(ctx context.Context, network, contractID, creator string, ledger uint32) error {
 	const q = `UPDATE contracts SET creator = $3, created_ledger = $4 WHERE network = $1 AND contract_id = $2`
@@ -546,47 +559,104 @@ func (p *Postgres) ListContracts(ctx context.Context, f ListFilter) (*ContractPa
 	// words matchDocs splits out of the query for the memory store, so
 	// both stores look for exactly the same words. Rows that match by
 	// name rank as name_hit and sort ahead of doc-only matches.
+	//
+	// The rows come from a UNION ALL of four arms rather than one join,
+	// so that a query can use the indexes (migration 19's trigram indexes
+	// on contract_id, name and symbols, and the docs_tsv GIN index). A
+	// single OR spanning both tables of a join cannot use a per-table
+	// index, so it read both tables in full. Each arm filters one table
+	// and leaves out what an earlier arm returned, so a contract arrives
+	// once. The docs arm only narrows on the first term. The WHERE below
+	// keeps the full predicate, so the arms decide how rows are found,
+	// never which rows match. Without a query, only the first arm runs.
+	// countContracts must stay the same.
+	//
+	// The best plan depends on the query text: an index for a rare word, a
+	// sequential scan for one every contract has. A cached statement can
+	// switch to one generic plan for every query after a few runs, so both
+	// statements run as unnamed ones (QueryExecModeDescribeExec), which
+	// Postgres plans against the actual query each time.
 	const q = `
 		WITH matched AS (
 			SELECT c.network, c.contract_id, c.current_wasm_hash, c.name, c.source_url, c.source_commit,
 			       c.first_seen, c.last_refreshed, c.missing_since,
 			       c.implements, c.deprecated_since, c.successor, c.deprecation_note,
 			       c.creator, c.created_ledger, c.verified_by, c.verified_at, c.verified_wasm_hash,
-			       COALESCE(s.symbols, '') AS symbols, COALESCE(s.docs_tsv, ''::tsvector) AS docs,
+			       COALESCE(c.symbols, '') AS symbols, COALESCE(c.docs_tsv, ''::tsvector) AS docs,
 			       ($2 = '' OR c.contract_id ILIKE '%' || $2 || '%'
 			               OR c.name ILIKE '%' || $2 || '%'
-			               OR s.symbols ILIKE '%' || $2 || '%') AS name_hit
-			FROM contracts c
-			LEFT JOIN specs s
-			  ON s.network = c.network AND s.contract_id = c.contract_id
-			 AND s.wasm_hash = c.current_wasm_hash
+			               OR c.symbols ILIKE '%' || $2 || '%') AS name_hit
+			FROM (
+			    -- No text query: every contract.
+			    SELECT c.*, s.spec, s.symbols, s.docs_tsv
+			    FROM contracts c
+			    LEFT JOIN specs s
+			      ON s.network = c.network AND s.contract_id = c.contract_id
+			     AND s.wasm_hash = c.current_wasm_hash
+			    WHERE $2 = ''
+			    UNION ALL
+			    -- Contracts whose ID or name matches, through the trigram indexes on
+			    -- contracts. Kept apart from the arm above so that $2 = '' is not
+			    -- ORed into this condition, which would stop it using the indexes.
+			    SELECT c.*, s.spec, s.symbols, s.docs_tsv
+			    FROM contracts c
+			    LEFT JOIN specs s
+			      ON s.network = c.network AND s.contract_id = c.contract_id
+			     AND s.wasm_hash = c.current_wasm_hash
+			    WHERE $2 <> ''
+			      AND (c.contract_id ILIKE '%' || $2 || '%' OR c.name ILIKE '%' || $2 || '%')
+			    UNION ALL
+			    -- Contracts whose current spec names a matching symbol, through the
+			    -- trigram index on specs, less those the ID and name arm returned.
+			    SELECT c.*, s.spec, s.symbols, s.docs_tsv
+			    FROM specs s
+			    JOIN contracts c
+			      ON c.network = s.network AND c.contract_id = s.contract_id
+			     AND c.current_wasm_hash = s.wasm_hash
+			    WHERE $2 <> ''
+			      AND s.symbols ILIKE '%' || $2 || '%'
+			      AND NOT (c.contract_id ILIKE '%' || $2 || '%' OR c.name ILIKE '%' || $2 || '%')
+			    UNION ALL
+			    -- Contracts whose current docs contain the first doc term, through the
+			    -- docs_tsv GIN index, less those the two arms above returned. The WHERE
+			    -- below still requires every term.
+			    SELECT c.*, s.spec, s.symbols, s.docs_tsv
+			    FROM specs s
+			    JOIN contracts c
+			      ON c.network = s.network AND c.contract_id = s.contract_id
+			     AND c.current_wasm_hash = s.wasm_hash
+			    WHERE $2 <> ''
+			      AND s.docs_tsv @@ to_tsquery('simple', ($11::text[])[1] || ':*')
+			      AND NOT (c.contract_id ILIKE '%' || $2 || '%' OR c.name ILIKE '%' || $2 || '%'
+			               OR s.symbols ILIKE '%' || $2 || '%')
+			) c
 			WHERE ($1 = '' OR c.network = $1)
 			  AND ($2 = '' OR c.contract_id ILIKE '%' || $2 || '%'
 			               OR c.name ILIKE '%' || $2 || '%'
-			               OR s.symbols ILIKE '%' || $2 || '%'
+			               OR c.symbols ILIKE '%' || $2 || '%'
 			               OR (cardinality(COALESCE($11::text[], '{}'::text[])) > 0
 			                   AND NOT EXISTS (
 			                       SELECT 1
 			                       FROM unnest(COALESCE($11::text[], '{}'::text[])) AS term(word)
-			                       WHERE NOT (COALESCE(s.docs_tsv, ''::tsvector) @@ to_tsquery('simple', term.word || ':*')))))
+			                       WHERE NOT (COALESCE(c.docs_tsv, ''::tsvector) @@ to_tsquery('simple', term.word || ':*')))))
 			  AND NOT EXISTS (
 			      SELECT 1 FROM unnest(COALESCE($3::text[], '{}'::text[])) AS want(name)
 			      WHERE NOT EXISTS (
-			          SELECT 1 FROM jsonb_array_elements(COALESCE(s.spec->'functions', '[]'::jsonb)) AS f
+			          SELECT 1 FROM jsonb_array_elements(COALESCE(c.spec->'functions', '[]'::jsonb)) AS f
 			          WHERE f->>'name' = want.name))
 			  AND NOT EXISTS (
 			      SELECT 1 FROM unnest(COALESCE($4::text[], '{}'::text[])) AS want(name)
 			      WHERE NOT EXISTS (
-			          SELECT 1 FROM jsonb_array_elements(COALESCE(s.spec->'types'->'structs', '[]'::jsonb)) AS t
+			          SELECT 1 FROM jsonb_array_elements(COALESCE(c.spec->'types'->'structs', '[]'::jsonb)) AS t
 			          WHERE t->>'name' = want.name
 			          UNION ALL
-			          SELECT 1 FROM jsonb_array_elements(COALESCE(s.spec->'types'->'unions', '[]'::jsonb)) AS t
+			          SELECT 1 FROM jsonb_array_elements(COALESCE(c.spec->'types'->'unions', '[]'::jsonb)) AS t
 			          WHERE t->>'name' = want.name
 			          UNION ALL
-			          SELECT 1 FROM jsonb_array_elements(COALESCE(s.spec->'types'->'enums', '[]'::jsonb)) AS t
+			          SELECT 1 FROM jsonb_array_elements(COALESCE(c.spec->'types'->'enums', '[]'::jsonb)) AS t
 			          WHERE t->>'name' = want.name
 			          UNION ALL
-			          SELECT 1 FROM jsonb_array_elements(COALESCE(s.spec->'types'->'error_enums', '[]'::jsonb)) AS t
+			          SELECT 1 FROM jsonb_array_elements(COALESCE(c.spec->'types'->'error_enums', '[]'::jsonb)) AS t
 			          WHERE t->>'name' = want.name))
 			  AND (COALESCE(cardinality($5::text[]), 0) = 0 OR c.implements @> $5::text[])
 		)
@@ -631,7 +701,7 @@ func (p *Postgres) ListContracts(ctx context.Context, f ListFilter) (*ContractPa
 		cursorTier = cur.Rank
 	}
 
-	rows, err := p.pool.Query(ctx, q, f.Network, escapeLike(f.Query), f.Functions, f.Types, f.Implements, f.Limit, f.Offset,
+	rows, err := p.pool.Query(ctx, q, pgx.QueryExecModeDescribeExec, f.Network, escapeLike(f.Query), f.Functions, f.Types, f.Implements, f.Limit, f.Offset,
 		cursorTime, cursorID, cursorNetwork, docMatchLower(f.Query), cursorTier)
 	if err != nil {
 		return nil, fmt.Errorf("store: listing contracts: %w", err)
@@ -957,45 +1027,86 @@ func (p *Postgres) countUpgrades(ctx context.Context, network string) (int, erro
 func (p *Postgres) countContracts(ctx context.Context, f ListFilter) (int, error) {
 	// Must mirror ListContracts' predicate, or a page past the end would
 	// report a different total from the pages before it. $6 is the
-	// doc-search term array the listing statement gets as $11.
+	// doc-search term array the listing statement gets as $11. It runs
+	// as an unnamed statement for the reason ListContracts gives.
 	const q = `
 		SELECT count(*)
-		FROM contracts c
-		LEFT JOIN specs s
-		  ON s.network = c.network AND s.contract_id = c.contract_id
-		 AND s.wasm_hash = c.current_wasm_hash
+		FROM (
+		    -- No text query: every contract.
+		    SELECT c.*, s.spec, s.symbols, s.docs_tsv
+		    FROM contracts c
+		    LEFT JOIN specs s
+		      ON s.network = c.network AND s.contract_id = c.contract_id
+		     AND s.wasm_hash = c.current_wasm_hash
+		    WHERE $2 = ''
+		    UNION ALL
+		    -- Contracts whose ID or name matches, through the trigram indexes on
+		    -- contracts. Kept apart from the arm above so that $2 = '' is not
+		    -- ORed into this condition, which would stop it using the indexes.
+		    SELECT c.*, s.spec, s.symbols, s.docs_tsv
+		    FROM contracts c
+		    LEFT JOIN specs s
+		      ON s.network = c.network AND s.contract_id = c.contract_id
+		     AND s.wasm_hash = c.current_wasm_hash
+		    WHERE $2 <> ''
+		      AND (c.contract_id ILIKE '%' || $2 || '%' OR c.name ILIKE '%' || $2 || '%')
+		    UNION ALL
+		    -- Contracts whose current spec names a matching symbol, through the
+		    -- trigram index on specs, less those the ID and name arm returned.
+		    SELECT c.*, s.spec, s.symbols, s.docs_tsv
+		    FROM specs s
+		    JOIN contracts c
+		      ON c.network = s.network AND c.contract_id = s.contract_id
+		     AND c.current_wasm_hash = s.wasm_hash
+		    WHERE $2 <> ''
+		      AND s.symbols ILIKE '%' || $2 || '%'
+		      AND NOT (c.contract_id ILIKE '%' || $2 || '%' OR c.name ILIKE '%' || $2 || '%')
+		    UNION ALL
+		    -- Contracts whose current docs contain the first doc term, through the
+		    -- docs_tsv GIN index, less those the two arms above returned. The WHERE
+		    -- below still requires every term.
+		    SELECT c.*, s.spec, s.symbols, s.docs_tsv
+		    FROM specs s
+		    JOIN contracts c
+		      ON c.network = s.network AND c.contract_id = s.contract_id
+		     AND c.current_wasm_hash = s.wasm_hash
+		    WHERE $2 <> ''
+		      AND s.docs_tsv @@ to_tsquery('simple', ($6::text[])[1] || ':*')
+		      AND NOT (c.contract_id ILIKE '%' || $2 || '%' OR c.name ILIKE '%' || $2 || '%'
+		               OR s.symbols ILIKE '%' || $2 || '%')
+		) c
 		WHERE ($1 = '' OR c.network = $1)
 		  AND ($2 = '' OR c.contract_id ILIKE '%' || $2 || '%'
 		               OR c.name ILIKE '%' || $2 || '%'
-		               OR s.symbols ILIKE '%' || $2 || '%'
+		               OR c.symbols ILIKE '%' || $2 || '%'
 		               OR (cardinality(COALESCE($6::text[], '{}'::text[])) > 0
 		                   AND NOT EXISTS (
 		                       SELECT 1
 		                       FROM unnest(COALESCE($6::text[], '{}'::text[])) AS term(word)
-		                       WHERE NOT (COALESCE(s.docs_tsv, ''::tsvector) @@ to_tsquery('simple', term.word || ':*')))))
+		                       WHERE NOT (COALESCE(c.docs_tsv, ''::tsvector) @@ to_tsquery('simple', term.word || ':*')))))
 		  AND NOT EXISTS (
 		      SELECT 1 FROM unnest(COALESCE($3::text[], '{}'::text[])) AS want(name)
 		      WHERE NOT EXISTS (
-		          SELECT 1 FROM jsonb_array_elements(COALESCE(s.spec->'functions', '[]'::jsonb)) AS f
+		          SELECT 1 FROM jsonb_array_elements(COALESCE(c.spec->'functions', '[]'::jsonb)) AS f
 		          WHERE f->>'name' = want.name))
 		  AND NOT EXISTS (
 		      SELECT 1 FROM unnest(COALESCE($4::text[], '{}'::text[])) AS want(name)
 		      WHERE NOT EXISTS (
-		          SELECT 1 FROM jsonb_array_elements(COALESCE(s.spec->'types'->'structs', '[]'::jsonb)) AS t
+		          SELECT 1 FROM jsonb_array_elements(COALESCE(c.spec->'types'->'structs', '[]'::jsonb)) AS t
 		          WHERE t->>'name' = want.name
 		          UNION ALL
-		          SELECT 1 FROM jsonb_array_elements(COALESCE(s.spec->'types'->'unions', '[]'::jsonb)) AS t
+		          SELECT 1 FROM jsonb_array_elements(COALESCE(c.spec->'types'->'unions', '[]'::jsonb)) AS t
 		          WHERE t->>'name' = want.name
 		          UNION ALL
-		          SELECT 1 FROM jsonb_array_elements(COALESCE(s.spec->'types'->'enums', '[]'::jsonb)) AS t
+		          SELECT 1 FROM jsonb_array_elements(COALESCE(c.spec->'types'->'enums', '[]'::jsonb)) AS t
 		          WHERE t->>'name' = want.name
 		          UNION ALL
-		          SELECT 1 FROM jsonb_array_elements(COALESCE(s.spec->'types'->'error_enums', '[]'::jsonb)) AS t
+		          SELECT 1 FROM jsonb_array_elements(COALESCE(c.spec->'types'->'error_enums', '[]'::jsonb)) AS t
 		          WHERE t->>'name' = want.name))
 		  AND (COALESCE(cardinality($5::text[]), 0) = 0 OR c.implements @> $5::text[])`
 
 	var total int
-	if err := p.pool.QueryRow(ctx, q, f.Network, escapeLike(f.Query), f.Functions, f.Types, f.Implements, docMatchLower(f.Query)).Scan(&total); err != nil {
+	if err := p.pool.QueryRow(ctx, q, pgx.QueryExecModeDescribeExec, f.Network, escapeLike(f.Query), f.Functions, f.Types, f.Implements, docMatchLower(f.Query)).Scan(&total); err != nil {
 		return 0, fmt.Errorf("store: counting contracts: %w", err)
 	}
 	return total, nil

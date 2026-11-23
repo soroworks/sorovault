@@ -94,6 +94,39 @@ func TestRender(t *testing.T) {
 			in:   model.Type{Kind: model.KindVec},
 			want: "Vec<?>",
 		},
+		// Edge cases: nil children on other container kinds.
+		{
+			name: "option with nil inner",
+			in:   model.Type{Kind: model.KindOption},
+			want: "Option<?>",
+		},
+		{
+			name: "result with nil ok arm",
+			in:   model.Type{Kind: model.KindResult, Error: ptr(model.Scalar(model.KindError))},
+			want: "Result<?, Error>",
+		},
+		{
+			name: "result with nil error arm",
+			in:   model.Type{Kind: model.KindResult, Ok: ptr(model.Scalar(model.KindVoid))},
+			want: "Result<(), ?>",
+		},
+		{
+			name: "map with nil key",
+			in:   model.Type{Kind: model.KindMap, Value: ptr(model.Scalar(model.KindU64))},
+			want: "Map<?, u64>",
+		},
+		{
+			// An unknown kind (not in scalarDisplay and not a composite)
+			// falls through to the default branch and renders as its string.
+			name: "unknown kind",
+			in:   model.Type{Kind: model.Kind("custom_kind")},
+			want: "custom_kind",
+		},
+		{
+			name: "bytesN with N zero",
+			in:   model.Type{Kind: model.KindBytesN, N: 0},
+			want: "BytesN<0>",
+		},
 	}
 
 	for _, tt := range tests {
@@ -302,4 +335,49 @@ func TestStellarAssetContractInterface(t *testing.T) {
 	require.True(t, ok)
 	require.Len(t, trust.Inputs, 1)
 	assert.Equal(t, "addr", trust.Inputs[0].Name)
+}
+
+// TestInterfaceFunctionEdgeCases covers boundary inputs that the happy-path
+// test does not exercise: an empty interface, a function with an empty-string
+// name, and a name that differs only by trailing whitespace.
+func TestInterfaceFunctionEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		iface  *model.Interface
+		lookup string
+		wantOk bool
+		wantFn string
+	}{
+		{
+			name:   "empty interface returns not-found for any lookup",
+			iface:  &model.Interface{},
+			lookup: "transfer",
+			wantOk: false,
+		},
+		{
+			name:   "empty-string name matches a function registered as empty string",
+			iface:  &model.Interface{Functions: []model.Function{{Name: ""}, {Name: "mint"}}},
+			lookup: "",
+			wantOk: true,
+			wantFn: "",
+		},
+		{
+			name:   "name with trailing space does not match the trimmed form",
+			iface:  &model.Interface{Functions: []model.Function{{Name: "transfer"}}},
+			lookup: "transfer ",
+			wantOk: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fn, ok := tt.iface.Function(tt.lookup)
+			assert.Equal(t, tt.wantOk, ok)
+			if tt.wantOk {
+				assert.Equal(t, tt.wantFn, fn.Name)
+			}
+		})
+	}
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/soroworks/sorovault/internal/config"
+	"github.com/soroworks/sorovault/internal/metrics"
 	"github.com/soroworks/sorovault/internal/registry"
 	"github.com/soroworks/sorovault/internal/spec"
 	"github.com/soroworks/sorovault/internal/stellar"
@@ -20,6 +21,10 @@ type app struct {
 	log      *slog.Logger
 	registry *registry.Registry
 	fetcher  stellar.Fetcher
+
+	// metrics is set by serve when METRICS_ADDR is; nil means metrics
+	// are off and nothing reports to them.
+	metrics *metrics.Metrics
 
 	closers []func() error
 }

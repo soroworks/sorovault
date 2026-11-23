@@ -171,6 +171,54 @@ func (h *harness) register(t *testing.T, id string) {
 // TestTemplatesParse is the guard that matters most for a template-driven
 // UI: NewServer parses everything up front, so a broken template is a
 // startup failure rather than a 500 in production.
+func TestSetPublicURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		input     string
+		wantURL   string
+		wantFiles int
+	}{
+		{"empty input", "", "", 0},
+		{"clean url without slash", "https://registry.example.test", "https://registry.example.test", 4},
+		{"url with trailing slash", "https://registry.example.test/", "https://registry.example.test", 4},
+		{"url with multiple trailing slashes", "https://registry.example.test///", "https://registry.example.test", 4},
+		{"url with path prefix", "https://example.com/vault", "https://example.com/vault", 4},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := slog.New(slog.NewTextHandler(io.Discard, nil))
+			reg := registry.New(stellartest.New(), spec.XDRDecoder{}, store.NewMemory(), registry.Options{Logger: log})
+			ui, err := web.NewServer(reg, log)
+			require.NoError(t, err)
+			ui.SetPublicURL(tt.input)
+
+			memory := reg.Store().(*store.Memory)
+			for i := 0; i < tt.wantFiles; i++ {
+				c := store.Contract{ContractID: fmt.Sprintf("C%d", i), Network: "testnet", CurrentWasmHash: fmt.Sprintf("hash-%d", i)}
+				require.NoError(t, memory.Save(context.Background(), c, &model.Interface{ABIVersion: model.ABIVersion}))
+			}
+
+			server := httptest.NewServer(ui.Routes())
+			defer server.Close()
+
+			if tt.input == "" {
+				resp, err := server.Client().Get(server.URL + "/sitemap.xml")
+				require.NoError(t, err)
+				defer func() { require.NoError(t, resp.Body.Close()) }()
+				assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+			} else {
+				resp, err := server.Client().Get(server.URL + "/sitemap.xml")
+				require.NoError(t, err)
+				defer func() { require.NoError(t, resp.Body.Close()) }()
+				require.Equal(t, http.StatusOK, resp.StatusCode)
+			}
+		})
+	}
+}
+
 func TestTemplatesParse(t *testing.T) {
 	t.Parallel()
 
@@ -266,6 +314,30 @@ func TestIndexListsContracts(t *testing.T) {
 	assert.Contains(t, body, idA)
 	assert.Contains(t, body, "1 contract")
 	assert.Contains(t, body, `id="contract-rows"`)
+}
+
+// TestIndexShowsContractNames proves a named contract's name appears in
+// the listing — escaped, since an operator-set name is still free text —
+// and that searching for it finds the contract.
+func TestIndexShowsContractNames(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.register(t, idA)
+	h.register(t, idB)
+	_, err := h.reg.Rename(context.Background(), idA, "Example <b>Token</b>")
+	require.NoError(t, err)
+
+	resp, body := h.get(t, "/")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Contains(t, body, `<div class="name">Example &lt;b&gt;Token&lt;/b&gt;</div>`)
+	assert.Equal(t, 1, strings.Count(body, `<div class="name">`),
+		"an unnamed contract renders no name")
+
+	resp, body = h.get(t, "/?q=example")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Contains(t, body, idA)
+	assert.NotContains(t, body, idB)
 }
 
 func TestIndexNetworkSelectorFiltersResults(t *testing.T) {

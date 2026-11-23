@@ -46,6 +46,14 @@ const (
 
 type registerRequest struct {
 	ContractID string `json:"contract_id"`
+	// Name is an optional display name. Empty keeps the contract's
+	// existing name.
+	Name string `json:"name,omitempty"`
+}
+
+// renameRequest is the body of PATCH /api/contracts/{id}.
+type renameRequest struct {
+	Name *string `json:"name"`
 }
 
 type batchRegisterRequest struct {
@@ -232,15 +240,54 @@ func decodeJSON(r *http.Request, v any) error {
 	return nil
 }
 
+// RequestObserver is told about every request the server finishes, which
+// is how serve feeds its HTTP metrics. Implementations must be safe for
+// concurrent use and must not block.
+type RequestObserver interface {
+	// ObserveRequest records one request: its method, the route pattern
+	// it matched (never the raw path, so no identifier is recorded and the
+	// set of values stays bounded), the status written and how long it
+	// took.
+	ObserveRequest(method, route string, status int, duration time.Duration)
+}
+
+// unmatchedRoute is the route a request is observed under when no route
+// matched it. The raw path would make every mistyped URL a new series.
+const unmatchedRoute = "unmatched"
+
 // requestLogger logs one line per request at debug level, and promotes
 // server errors to error level so failures are visible at default settings.
-func requestLogger(log *slog.Logger) func(http.Handler) http.Handler {
+// Every observer is told about the request too.
+func requestLogger(log *slog.Logger, observers ...RequestObserver) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 			start := time.Now()
+			// returned stays false when the handler panics; the deferred
+			// func then runs while the panic unwinds to the recoverer.
+			returned := false
 
 			defer func() {
+				if len(observers) > 0 {
+					route := chi.RouteContext(r.Context()).RoutePattern()
+					if route == "" {
+						route = unmatchedRoute
+					}
+					status := ww.Status()
+					switch {
+					case status == 0 && !returned:
+						// A panic the recoverer will answer with a 500.
+						status = http.StatusInternalServerError
+					case status == 0:
+						// Nothing was written; net/http answers 200.
+						status = http.StatusOK
+					}
+					elapsed := time.Since(start)
+					for _, o := range observers {
+						o.ObserveRequest(r.Method, route, status, elapsed)
+					}
+				}
+
 				attrs := []any{
 					"method", r.Method,
 					"route", routePattern(r),
@@ -258,6 +305,7 @@ func requestLogger(log *slog.Logger) func(http.Handler) http.Handler {
 			}()
 
 			next.ServeHTTP(ww, r)
+			returned = true
 		})
 	}
 }

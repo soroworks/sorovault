@@ -343,6 +343,87 @@ func TestExampleNeedsAnInterface(t *testing.T) {
 	assert.ErrorContains(t, err, "no interface")
 }
 
+// TestExampleEdgeCases covers inputs that fall between the existing scalar and
+// container tables: a zero-argument function and a Result whose Ok arm is nil.
+func TestExampleEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		fn       model.Function
+		expected string
+	}{
+		{
+			"zero-argument function yields empty object",
+			model.Function{Name: "noop"},
+			`{}`,
+		},
+		{
+			"result with nil ok arm yields null",
+			model.Function{Name: "f", Inputs: []model.Param{
+				{Name: "x", Type: model.Type{Kind: model.KindResult}},
+			}},
+			`{"x": null}`,
+		},
+		{
+			"bytes_n zero length yields empty hex string",
+			model.Function{Name: "f", Inputs: []model.Param{
+				{Name: "b", Type: model.Type{Kind: model.KindBytesN, N: 0, Display: "BytesN"}},
+			}},
+			`{"b": ""}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			iface := &model.Interface{Functions: []model.Function{tc.fn}}
+			fn, ok := iface.Function(tc.fn.Name)
+			require.True(t, ok)
+
+			got, err := codegen.Example(iface, fn, src)
+			require.NoError(t, err)
+			assert.JSONEq(t, tc.expected, string(got))
+		})
+	}
+}
+
+// TestExamplesEdgeCases covers the boundary behaviour of the all-functions
+// document: an empty interface and a document that cannot be completed because
+// one function has a self-referential type.
+func TestExamplesEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty interface yields empty object", func(t *testing.T) {
+		t.Parallel()
+
+		iface := &model.Interface{}
+		got, err := codegen.Examples(iface, src)
+		require.NoError(t, err)
+		assert.JSONEq(t, `{}`, string(got))
+	})
+
+	t.Run("one failing function aborts the whole document", func(t *testing.T) {
+		t.Parallel()
+
+		iface := &model.Interface{
+			Types: model.Types{Structs: []model.Struct{
+				{Name: "Loop", Fields: []model.StructField{
+					{Name: "next", Type: model.Type{Kind: model.KindUDT, Name: "Loop"}},
+				}},
+			}},
+			Functions: []model.Function{
+				{Name: "good"},
+				{Name: "bad", Inputs: []model.Param{
+					{Name: "loop", Type: model.Type{Kind: model.KindUDT, Name: "Loop"}},
+				}},
+			},
+		}
+		_, err := codegen.Examples(iface, src)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "contains itself")
+	})
+}
+
 // TestExampleArgumentsKeepTheirDeclarationOrder checks that arguments appear
 // in the order the signature declares them, which is the order a reader
 // compares the example against.
