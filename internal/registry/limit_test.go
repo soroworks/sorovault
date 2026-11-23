@@ -297,10 +297,12 @@ func TestCheckPassphraseEdgeCases(t *testing.T) {
 	}{
 		{"both empty", "", "", false},
 		{"empty expectation accepts anything", stellar.NetworkPublic, "", false},
+		{"matching passphrases", stellar.NetworkTestnet, stellar.NetworkTestnet, false},
 		{"empty report against an expectation", "", stellar.NetworkTestnet, true},
 		{"case differs", "test sdf network ; september 2015", stellar.NetworkTestnet, true},
 		{"trailing whitespace differs", stellar.NetworkTestnet + " ", stellar.NetworkTestnet, true},
 		{"whitespace-only expectation is not empty", stellar.NetworkTestnet, " ", true},
+		{"mismatch between public and testnet", stellar.NetworkPublic, stellar.NetworkTestnet, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -48,34 +48,3 @@ func TestNetworkResolvePassphrase(t *testing.T) {
 		})
 	}
 }
-
-// TestCheckPassphraseEdgeCases covers boundary and invalid inputs that the
-// existing TestCheckPassphrase in limit_test.go does not reach.
-func TestCheckPassphraseEdgeCases(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		got     string
-		want    string
-		wantErr bool
-	}{
-		{"empty want accepts any passphrase", stellar.NetworkPublic, "", false},
-		{"empty want with empty got", "", "", false},
-		{"matching passphrases", stellar.NetworkTestnet, stellar.NetworkTestnet, false},
-		{"empty got with non-empty want", "", stellar.NetworkTestnet, true},
-		{"mismatch wraps ErrNetworkMismatch", stellar.NetworkPublic, stellar.NetworkTestnet, true},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			err := registry.CheckPassphrase(tc.got, tc.want)
-			if tc.wantErr {
-				require.ErrorIs(t, err, registry.ErrNetworkMismatch)
-			} else {
-				require.NoError(t, err)
-			}
-		})
-	}
-}
