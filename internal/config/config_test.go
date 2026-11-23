@@ -690,6 +690,34 @@ func TestParseAPITokens(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("boundary length", func(t *testing.T) {
+		t.Parallel()
+
+		// exactly 16 characters: the minimum, must pass
+		tokens, err := config.ParseAPITokens("0123456789abcdef")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"0123456789abcdef"}, tokens)
+
+		// exactly 15 characters: one below the minimum, must fail
+		_, err = config.ParseAPITokens("0123456789abcde")
+		require.Error(t, err)
+	})
+
+	t.Run("tab inside token is rejected", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := config.ParseAPITokens("0123456789abcdef\tbbb")
+		require.Error(t, err)
+	})
+
+	t.Run("only commas produce empty list", func(t *testing.T) {
+		t.Parallel()
+
+		tokens, err := config.ParseAPITokens(",,,")
+		require.NoError(t, err)
+		assert.Empty(t, tokens)
+	})
 }
 
 func TestLoadAPITokens(t *testing.T) {

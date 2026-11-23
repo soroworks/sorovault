@@ -175,6 +175,31 @@ func TestNewRejectsNonPositiveInterval(t *testing.T) {
 	}
 }
 
+// TestNewIntervalBoundaries adds the boundary cases the loop above does not
+// cover: the minimum positive value that must succeed, and -1ns (the first
+// value below zero) that must fail.
+func TestNewIntervalBoundaries(t *testing.T) {
+	t.Parallel()
+
+	for name, d := range map[string]time.Duration{
+		"negative one nanosecond": -time.Nanosecond,
+		"zero nanoseconds":        0,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := refresher.New(newFixture(t).reg, refresher.Options{Interval: d})
+			assert.Error(t, err, "non-positive interval %s must be rejected", d)
+		})
+	}
+
+	t.Run("minimum positive one nanosecond", func(t *testing.T) {
+		t.Parallel()
+		r, err := refresher.New(newFixture(t).reg, refresher.Options{Interval: time.Nanosecond})
+		require.NoError(t, err)
+		assert.NotNil(t, r)
+	})
+}
+
 // TestLastSweepReportsTheMostRecentSweep proves the in-memory summary the
 // statistics endpoint reads is recorded once Run completes a sweep, and not
 // before.

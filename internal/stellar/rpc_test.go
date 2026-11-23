@@ -112,6 +112,53 @@ func (f *fakeRPC) handle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func TestClose(t *testing.T) {
+	t.Parallel()
+
+	t.Run("table-driven edge cases for Close", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			name    string
+			fetcher *stellar.RPCFetcher
+			wantErr bool
+		}{
+			{
+				name:    "happy path with active client",
+				fetcher: stellar.NewRPCFetcher("http://localhost:8000", nil),
+				wantErr: false,
+			},
+			{
+				name:    "repeated close calls",
+				fetcher: stellar.NewRPCFetcher("http://localhost:8000", nil),
+				wantErr: false,
+			},
+			{
+				name:    "empty or zero url fetcher",
+				fetcher: stellar.NewRPCFetcher("", nil),
+				wantErr: false,
+			},
+		}
+
+		for _, tt := range tests {
+			tt := tt
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				err := tt.fetcher.Close()
+				if tt.wantErr {
+					assert.Error(t, err, "Close should return error for %s", tt.name)
+				} else {
+					assert.NoError(t, err, "Close should succeed for %s", tt.name)
+				}
+				if tt.name == "repeated close calls" {
+					err2 := tt.fetcher.Close()
+					assert.NoError(t, err2, "subsequent Close call should be idempotent or safe")
+				}
+			})
+		}
+	})
+}
+
 func TestRateLimitErrorsAreClassified(t *testing.T) {
 	t.Parallel()
 

@@ -94,6 +94,39 @@ func TestRender(t *testing.T) {
 			in:   model.Type{Kind: model.KindVec},
 			want: "Vec<?>",
 		},
+		// Edge cases: nil children on other container kinds.
+		{
+			name: "option with nil inner",
+			in:   model.Type{Kind: model.KindOption},
+			want: "Option<?>",
+		},
+		{
+			name: "result with nil ok arm",
+			in:   model.Type{Kind: model.KindResult, Error: ptr(model.Scalar(model.KindError))},
+			want: "Result<?, Error>",
+		},
+		{
+			name: "result with nil error arm",
+			in:   model.Type{Kind: model.KindResult, Ok: ptr(model.Scalar(model.KindVoid))},
+			want: "Result<(), ?>",
+		},
+		{
+			name: "map with nil key",
+			in:   model.Type{Kind: model.KindMap, Value: ptr(model.Scalar(model.KindU64))},
+			want: "Map<?, u64>",
+		},
+		{
+			// An unknown kind (not in scalarDisplay and not a composite)
+			// falls through to the default branch and renders as its string.
+			name: "unknown kind",
+			in:   model.Type{Kind: model.Kind("custom_kind")},
+			want: "custom_kind",
+		},
+		{
+			name: "bytesN with N zero",
+			in:   model.Type{Kind: model.KindBytesN, N: 0},
+			want: "BytesN<0>",
+		},
 	}
 
 	for _, tt := range tests {

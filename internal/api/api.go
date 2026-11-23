@@ -938,6 +938,8 @@ func newResponseBuffer() *responseBuffer {
 	return &responseBuffer{header: make(http.Header), status: http.StatusOK}
 }
 
+// Header returns the buffered header map that will be written to the real
+// response when writeTo is called.
 func (b *responseBuffer) Header() http.Header { return b.header }
 
 func (b *responseBuffer) WriteHeader(status int) {

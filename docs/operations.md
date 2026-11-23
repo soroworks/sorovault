@@ -112,6 +112,44 @@ changes only SoroVault's copy: it causes RPC traffic.
 SoroVault sets no cache headers. If the proxy caches, keep TTLs short: a
 refresh can change the interface served for the same contract ID.
 
+#### Example: TLS termination at the proxy (nginx)
+
+```nginx
+# TLS terminates at nginx; plain HTTP forwarded to sorovault on :8080
+server {
+    listen 443 ssl http2;
+    server_name vault.example.com;
+
+    ssl_certificate     /etc/ssl/certs/vault.example.com.crt;
+    ssl_certificate_key /etc/ssl/private/vault.example.com.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    # Preserve Origin and Referer for the browse UI registration form
+    proxy_set_header Origin        $http_origin;
+    proxy_set_header Referer       $http_referer;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+    # Allow 60s registration timeout; proxy read timeout must exceed it
+    proxy_read_timeout  70s;
+    proxy_send_timeout  70s;
+
+    location / {
+        proxy_pass http://sorovault:8080;
+    }
+}
+```
+
+#### Example: TLS termination in SoroVault (systemd drop-in)
+
+```ini
+# /etc/systemd/system/sorovault.service.d/tls.conf
+[Service]
+Environment=TLS_CERT_FILE=/etc/sorovault/tls.crt
+Environment=TLS_KEY_FILE=/etc/sorovault/tls.key
+Environment=HTTP_ADDR=0.0.0.0:8080
+```
+
 ### PostgreSQL connections
 
 `DATABASE_URL` is the connection string. If your platform mounts secrets as
