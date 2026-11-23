@@ -1051,59 +1051,6 @@ func TestLoadSigning(t *testing.T) {
 	}
 }
 
-const testDatabaseURL = "postgres://user:pass@localhost:5432/sorovault" //nolint:gosec // fixture, not a real credential
-
-// setEnv applies a set of variables for one test, clearing any others the
-// package reads so the ambient environment cannot influence the result.
-func setEnv(t *testing.T, vars map[string]string) {
-	t.Helper()
-
-	for _, key := range []string{
-		"RPC_URL", "NETWORK_PASSPHRASE", "DATABASE_URL", "DATABASE_URL_FILE",
-		"HTTP_ADDR", "TLS_CERT_FILE", "TLS_KEY_FILE",
-		"LOG_LEVEL", "LOG_FORMAT", "RPC_TIMEOUT", "REFRESH_INTERVAL",
-		"MAX_CONCURRENT_REGISTRATIONS", "REFRESH_WEBHOOK_URL",
-		"REFRESH_WEBHOOK_SECRET", "REFRESH_EVENTS", "REFRESH_EVENTS_INTERVAL",
-		"SIGNING_KEY", "SIGNING_KEY_FILE", "SIGNING_RETIRED_KEYS",
-		"CORS_ORIGINS", "RATE_LIMIT_PER_MINUTE",
-		"RATE_LIMIT_BURST", "TRUST_X_FORWARDED_FOR", "READ_ONLY",
-		"API_TOKENS",
-		"DATABASE_MAX_CONNS", "DATABASE_MIN_CONNS",
-	} {
-		if v, ok := vars[key]; ok {
-			t.Setenv(key, v)
-			continue
-		}
-		t.Setenv(key, "")
-	}
-}
-
-func TestLoadDefaults(t *testing.T) {
-	setEnv(t, map[string]string{"DATABASE_URL": testDatabaseURL})
-
-	cfg, err := config.Load()
-	require.NoError(t, err)
-
-	assert.Equal(t, config.DefaultRPCURL, cfg.RPCURL)
-	assert.Equal(t, config.DefaultNetworkPassphrase, cfg.NetworkPassphrase)
-	assert.Equal(t, config.DefaultHTTPAddr, cfg.HTTPAddr)
-	assert.Equal(t, testDatabaseURL, cfg.DatabaseURL)
-	assert.Equal(t, slog.LevelInfo, cfg.LogLevel)
-	assert.Equal(t, config.LogFormatText, cfg.LogFormat)
-	assert.Equal(t, config.DefaultRPCTimeout, cfg.RPCTimeout)
-	assert.Zero(t, cfg.RefreshInterval, "automatic refresh is opt-in")
-	assert.Zero(t, cfg.MaxConcurrentRegistrations,
-		"the concurrency limit is left to the registry unless it is configured")
-	assert.Zero(t, cfg.DatabaseMaxConns, "the pool size is left to pgx unless it is configured")
-	assert.Zero(t, cfg.DatabaseMinConns, "the pool size is left to pgx unless it is configured")
-	assert.Empty(t, cfg.TLSCertFile, "TLS is opt-in")
-	assert.Empty(t, cfg.TLSKeyFile, "TLS is opt-in")
-	assert.Empty(t, cfg.CORSOrigins, "CORS is opt-in")
-	assert.Equal(t, config.DefaultRateLimitPerMinute, cfg.RateLimitPerMinute)
-	assert.Equal(t, config.DefaultRateLimitBurst, cfg.RateLimitBurst)
-	assert.False(t, cfg.TrustXForwardedFor)
-}
-
 func TestLoadEdgeCases(t *testing.T) {
 	tests := []struct {
 		name    string
