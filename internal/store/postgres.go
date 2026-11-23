@@ -17,7 +17,8 @@ import (
 
 // Postgres is the Store backed by a Postgres database.
 type Postgres struct {
-	pool *pgxpool.Pool
+	pool      *pgxpool.Pool
+	ownsPool  bool
 }
 
 var _ Store = (*Postgres)(nil)
@@ -49,7 +50,7 @@ func NewPostgres(ctx context.Context, databaseURL string, opts PoolOptions) (*Po
 		pool.Close()
 		return nil, fmt.Errorf("store: pinging postgres: %w", err)
 	}
-	return &Postgres{pool: pool}, nil
+	return &Postgres{pool: pool, ownsPool: true}, nil
 }
 
 // ResolvePoolConfig parses databaseURL and applies opts to it, returning the
@@ -119,9 +120,12 @@ func (p *Postgres) Ping(ctx context.Context) error {
 	return nil
 }
 
-// Close releases the connection pool.
+// Close releases the connection pool if this store owns it.
+// A store created via NewPostgresFromPool does not own the pool and leaves it open.
 func (p *Postgres) Close() error {
-	p.pool.Close()
+	if p.ownsPool {
+		p.pool.Close()
+	}
 	return nil
 }
 
