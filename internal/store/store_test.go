@@ -1564,6 +1564,9 @@ func TestListFilterNormalize(t *testing.T) {
 		{"negative offset", store.ListFilter{Offset: -3}, store.DefaultLimit, 0, ""},
 		{"query is trimmed", store.ListFilter{Query: "  abc \n"}, store.DefaultLimit, 0, "abc"},
 		{"valid values pass through", store.ListFilter{Limit: 10, Offset: 20}, 10, 20, ""},
+		{"limit at exactly MaxLimit is not clamped", store.ListFilter{Limit: store.MaxLimit}, store.MaxLimit, 0, ""},
+		{"all-whitespace query becomes empty", store.ListFilter{Query: "   \t\n"}, store.DefaultLimit, 0, ""},
+		{"NUL byte in query is replaced with replacement character", store.ListFilter{Query: "abc\x00def"}, store.DefaultLimit, 0, "abc�def"},
 	}
 
 	for _, tt := range tests {

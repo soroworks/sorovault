@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -90,4 +91,54 @@ func TestNewPostgresAppliesPoolOptions(t *testing.T) {
 	pool := s.PoolConfig()
 	assert.Equal(t, int32(3), pool.MaxConns)
 	assert.Equal(t, int32(1), pool.MinConns)
+}
+
+// TestNewPostgresFromPoolEdgeCases exercises NewPostgresFromPool with boundary
+// pool sizes and verifies that Close does not shut the shared pool down.
+func TestNewPostgresFromPoolEdgeCases(t *testing.T) {
+	url := os.Getenv(TestDatabaseURLEnv)
+	if url == "" {
+		t.Skip(TestDatabaseURLEnv + " not set")
+	}
+
+	t.Run("minimum single-connection pool: PoolConfig reflects the setting", func(t *testing.T) {
+		t.Parallel()
+		pool, err := pgxpool.New(context.Background(), url+"&pool_max_conns=1&pool_min_conns=1")
+		require.NoError(t, err)
+		t.Cleanup(pool.Close)
+
+		s := store.NewPostgresFromPool(pool)
+		cfg := s.PoolConfig()
+		assert.Equal(t, int32(1), cfg.MaxConns)
+		assert.Equal(t, int32(1), cfg.MinConns)
+	})
+
+	t.Run("Close does not drain the shared pool", func(t *testing.T) {
+		t.Parallel()
+		pool, err := pgxpool.New(context.Background(), url)
+		require.NoError(t, err)
+		t.Cleanup(pool.Close)
+
+		s := store.NewPostgresFromPool(pool)
+		require.NoError(t, s.Close(), "Close must not return an error")
+		// The pool must still be alive — the caller (not the store) owns it.
+		require.NoError(t, pool.Ping(context.Background()),
+			"pool must remain usable after the wrapped store is closed")
+	})
+
+	t.Run("two stores can share one pool without interfering", func(t *testing.T) {
+		t.Parallel()
+		pool, err := pgxpool.New(context.Background(), url)
+		require.NoError(t, err)
+		t.Cleanup(pool.Close)
+
+		s1 := store.NewPostgresFromPool(pool)
+		s2 := store.NewPostgresFromPool(pool)
+		assert.NotNil(t, s1)
+		assert.NotNil(t, s2)
+		// Both stores share the same underlying connection; Ping through each
+		// confirms neither has broken the other's access.
+		require.NoError(t, s1.Ping(context.Background()))
+		require.NoError(t, s2.Ping(context.Background()))
+	})
 }

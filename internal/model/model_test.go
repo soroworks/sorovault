@@ -254,6 +254,9 @@ func TestEnvMeta(t *testing.T) {
 		{"a released protocol", 25, 0, "25"},
 		{"a pre-release", 25, 3, "25.3"},
 		{"the first protocol", 20, 0, "20"},
+		{"protocol zero is a valid boundary value", 0, 0, "0"},
+		{"protocol zero with a pre-release", 0, 1, "0.1"},
+		{"maximum uint32 protocol with no pre-release", ^uint32(0), 0, "4294967295"},
 	}
 
 	for _, tt := range tests {

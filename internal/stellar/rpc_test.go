@@ -489,3 +489,42 @@ func TestContextCancellation(t *testing.T) {
 	_, err := f.FetchContract(ctx, testContractID)
 	require.Error(t, err)
 }
+
+// TestNewRPCFetcherEdgeCases verifies boundary inputs to NewRPCFetcher: a nil
+// HTTP client, an empty URL, and that Close always returns nil.
+func TestNewRPCFetcherEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil httpClient uses SDK default and can reach a server", func(t *testing.T) {
+		t.Parallel()
+		fake := newFakeRPC(t)
+		srv := fake.start()
+
+		// Passing nil tells the SDK to use its own default http.Client.
+		f := stellar.NewRPCFetcher(srv.URL, nil)
+		t.Cleanup(func() { _ = f.Close() })
+
+		got, err := f.Network(context.Background())
+		require.NoError(t, err)
+		assert.Equal(t, stellar.NetworkTestnet, got)
+	})
+
+	t.Run("empty URL returns a non-nil fetcher whose calls fail", func(t *testing.T) {
+		t.Parallel()
+		f := stellar.NewRPCFetcher("", nil)
+		require.NotNil(t, f, "NewRPCFetcher must never return nil")
+		t.Cleanup(func() { _ = f.Close() })
+
+		_, err := f.Network(context.Background())
+		require.Error(t, err, "calls on a fetcher with no URL must fail")
+	})
+
+	t.Run("Close returns nil", func(t *testing.T) {
+		t.Parallel()
+		fake := newFakeRPC(t)
+		srv := fake.start()
+
+		f := stellar.NewRPCFetcher(srv.URL, srv.Client())
+		assert.NoError(t, f.Close())
+	})
+}
