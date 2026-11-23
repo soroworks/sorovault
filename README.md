@@ -314,6 +314,7 @@ back out of what it became. `--json` prints the same rows for scripts.
 | `RPC_URL` | `https://soroban-testnet.stellar.org` | Stellar RPC endpoint |
 | `NETWORK_PASSPHRASE` | `Test SDF Network ; September 2015` | the network you expect `RPC_URL` to serve |
 | `HTTP_ADDR` | `:8080` | listen address |
+| `METRICS_ADDR` | — (off) | separate `host:port` serving Prometheus metrics at `GET /metrics`; must differ from `HTTP_ADDR`. See [Metrics](#metrics) |
 | `TLS_CERT_FILE` | — | PEM certificate path; set with `TLS_KEY_FILE` to serve HTTPS (`--tls-cert` overrides) |
 | `TLS_KEY_FILE` | — | PEM private key path; set with `TLS_CERT_FILE` (`--tls-key` overrides) |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
@@ -356,6 +357,42 @@ A contract that fails to refresh — expired, or an RPC error — is logged and
 skipped, and the sweep carries on. One sweep runs at startup and then one per
 interval; a sweep in progress at shutdown is cancelled before the database is
 closed.
+
+### Metrics
+
+Set `METRICS_ADDR` (for example `127.0.0.1:9090`) and `sorovault serve` exposes
+Prometheus metrics at `GET /metrics` on that address — a listener of its own,
+so the registry's public port never serves operational detail, and off unless
+you ask for it. Binding to loopback or a private interface and letting
+Prometheus scrape it there is the intended setup. The address must differ from
+`HTTP_ADDR`, and a port already in use fails startup rather than leaving
+metrics silently absent.
+
+| Metric | Type | What it says |
+|---|---|---|
+| `sorovault_refresh_sweeps_total` | counter | scheduled sweeps that completed |
+| `sorovault_refresh_sweep_errors_total` | counter | scheduled sweeps that could not run (RPC or store down) |
+| `sorovault_refresh_contracts_checked_total` | counter | contracts sweeps attempted |
+| `sorovault_refresh_contracts_changed_total` | counter | contracts sweeps found upgraded |
+| `sorovault_refresh_contracts_failed_total` | counter | contracts sweeps could not refresh |
+| `sorovault_refresh_contracts_missing_total` | counter | contracts sweeps found gone from the network |
+| `sorovault_refresh_contracts_busy_total` | counter | contracts sweeps skipped at the concurrency limit |
+| `sorovault_refresh_last_success_timestamp_seconds` | gauge | Unix time the last sweep completed; `0` until one has |
+| `sorovault_contracts_registered{network}` | gauge | contracts in the registry, counted at scrape time; no series until a network has a contract |
+| `sorovault_http_requests_total{method,route,code}` | counter | requests by route pattern (`/api/contracts/{id}`, never the raw path) |
+| `sorovault_http_request_duration_seconds{method,route}` | histogram | request latency by route pattern |
+
+The standard `go_*` and `process_*` collectors are included. The refresh
+counters are fed from each scheduled sweep's summary — the one the log line
+reports — so they only move when `REFRESH_INTERVAL` is set; `refresh --all`
+from the CLI is a separate process and does not count. Routes no router matched
+are labelled `unmatched` and unusual methods `OTHER`, so a client cannot mint
+new series. A useful alert is a stale success timestamp:
+
+```yaml
+- alert: SoroVaultRefreshStalled
+  expr: time() - sorovault_refresh_last_success_timestamp_seconds > 3 * 6 * 3600  # 3 × REFRESH_INTERVAL=6h
+```
 
 ### Refreshing on upgrade events
 
@@ -740,13 +777,14 @@ through golang-migrate, and migrations are short-lived either way.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/api/contracts` | list contracts — `?q=`, `?function=`, `?type=`, `?network=`, `?limit=`, `?cursor=` (`?offset=` still works but is deprecated; a cursor walk sees contracts registered mid-walk exactly once, an offset page repeats and skips them) |
-| `POST` | `/api/contracts` | register a contract — `{"contract_id": "C…"}` |
+| `POST` | `/api/contracts` | register a contract — `{"contract_id": "C…", "name": "Example Token"}` (`name` optional) |
 | `POST` | `/api/contracts:batch` | register up to 20 contracts in one request — `{"contract_ids": ["C…", "C…"]}` |
 | `POST` | `/api/wasm/{hash}` | catalog uploaded code before a contract runs it |
 | `GET` | `/api/wasm/{hash}` | read a catalogued uploaded-code interface — `?network=` |
 | `GET` | `/api/contracts/{id}` | the decoded ABI — `?network=`, `?wasm_hash=`, `?download=1` |
 | `GET` | `/api/wasm/{hash}/contracts` | every contract running a given WASM — `?network=`, `?ever=`, `?limit=`, `?offset=` |
 | `GET` | `/api/contracts/{id}` | the decoded ABI — `?network=`, `?wasm_hash=` |
+| `PATCH` | `/api/contracts/{id}` | rename the contract — `{"name": "Example Token"}` |
 | `PUT` | `/api/contracts/{id}/source` | attach a `source_url` and optional `source_commit` |
 | `POST` | `/api/contracts/{id}/verify` | verify the publisher with a claim signed by the deploying account |
 | `GET` | `/api/keys` | public keys that verify interface signatures |
@@ -771,6 +809,20 @@ Worked examples for each route, with requests and abbreviated responses, are in
 `POST /api/contracts` returns **201** when the contract is new and **200** when
 it was already registered, so it is safe to retry. Passing `?wasm_hash=` to a
 read selects a superseded version instead of the current one.
+
+**Names.** A contract can carry an operator-chosen display name, which the
+browse UI shows and `?q=` searches. Set it when registering (`"name"` on
+`POST /api/contracts`, or `sorovault add <contract_id> --name "Example Token"`)
+or later with `PATCH /api/contracts/{id}`. Names are trimmed, at most 100
+characters, and may not contain control characters; anything else is a 400.
+Registering or refreshing without a name keeps the existing one, so a refresh
+never clears it:
+
+```console
+$ curl -X PATCH localhost:8080/api/contracts/CDZZ…4PAN \
+    -H 'Content-Type: application/json' -d '{"name": "zkVote"}'
+{"contract_id":"CDZZ…4PAN","network":"testnet","name":"zkVote",…}
+```
 
 `GET /api/contracts/{id}/functions/{fn}/example.json` returns an example
 argument list for a call: one deterministic placeholder of each argument's
@@ -912,7 +964,7 @@ beside it.
 ## CLI
 
 ```console
-sorovault add <contract_id>...      # fetch, decode and register (--from-file)
+sorovault add <contract_id>...      # fetch, decode and register (--from-file; --name for one contract)
 sorovault remove <contract_id>      # delete a contract and its versions (--yes)
 sorovault refresh <contract_id>...  # re-check for an upgraded interface (--from-file)
 sorovault refresh --all             # one sweep over every contract (--json)
@@ -1108,6 +1160,22 @@ Type mappings follow the Stellar CLI's own bindings (`u64`→`bigint`,
 `BytesN<32>`→`Buffer`, unions as `{ tag, values }`), so values pass through
 the SDK unchanged. It requires `@stellar/stellar-sdk` 14 or later and
 `buffer`.
+
+**Events.** Each event the contract declares gets its own types, so an indexer
+need not write them by hand: `<Name>EventPrefix`, the prefix topics as a
+readonly tuple to filter on; `<Name>EventTopics`, the parameters published as
+topics; `<Name>EventData`, the payload shaped by the event's data format (an
+object for `map`, a labelled tuple for `vec`, the bare value for
+`single-value`); and `<Name>Event`, joining the two. The `Event` suffix keeps
+an event clear of a type with the same name, and if a type already holds one
+of those names the event's names take a trailing underscore together:
+
+```ts
+import { VotedEventPrefix, type VotedEvent } from "./zkvote";
+
+VotedEventPrefix;                                    // readonly ["voted"]
+const e: VotedEvent = { topics: { voter: "G…" }, data: { proposal_index: 0 } };
+```
 
 ### Runtime validation
 

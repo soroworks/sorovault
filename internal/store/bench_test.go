@@ -89,6 +89,14 @@ func listBenchmarkBackends(b *testing.B) []listBenchmarkBackend {
 			pool.Close()
 			b.Fatal(err)
 		}
+		// Give the planner statistics for the rows just written, as
+		// autovacuum would on a live registry. Without them it plans for
+		// the near-empty tables it last saw, and the timings say more about
+		// stale statistics than about the query.
+		if _, err := pool.Exec(ctx, "ANALYZE contracts, specs"); err != nil {
+			pool.Close()
+			b.Fatal(err)
+		}
 		b.Cleanup(func() {
 			_, _ = pool.Exec(context.Background(), "DELETE FROM contracts WHERE network = $1", network)
 			pool.Close()
@@ -132,4 +140,105 @@ func seedListBenchmarkStore(ctx context.Context, backend store.Store, network st
 		}
 	}
 	return nil
+}
+
+// searchScaleContracts is the size the trigram indexes are for. At ten
+// thousand rows a sequential scan is cheap and the planner rightly prefers it.
+const searchScaleContracts = 100_000
+
+// BenchmarkSearchAtScale compares search with and without migration 19's
+// trigram indexes over 100,000 contracts, written straight into an isolated
+// database with SQL because saving them one at a time would take minutes.
+// It needs TEST_DATABASE_URL:
+//
+//	TEST_DATABASE_URL=... go test -run '^$' -bench SearchAtScale ./internal/store/
+func BenchmarkSearchAtScale(b *testing.B) {
+	baseURL := os.Getenv(TestDatabaseURLEnv)
+	if baseURL == "" {
+		b.Skip(TestDatabaseURLEnv + " not set")
+	}
+	ctx := context.Background()
+	dbURL := isolatedDatabase(b, ctx, baseURL)
+	if err := store.Migrate(dbURL); err != nil {
+		b.Fatal(err)
+	}
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(pool.Close)
+	if err := seedSearchScale(ctx, pool); err != nil {
+		b.Fatal(err)
+	}
+	s := store.NewPostgresFromPool(pool)
+
+	queries := []listBenchmarkQuery{
+		{name: "rare-symbol", query: "withdraw_rewards", want: 20},
+		{name: "id-fragment", query: "CBENCH0004242", want: 1},
+		{name: "name-fragment", query: "pool-99999", want: 1},
+		{name: "no-match", query: "symbol_not_present", want: 0},
+		{name: "every-row", query: "transfer", want: searchScaleContracts},
+		{name: "two-chars", query: "zq", want: 0},
+		{name: "no-query", query: "", want: searchScaleContracts},
+	}
+	run := func(b *testing.B) {
+		for _, q := range queries {
+			b.Run(q.name, func(b *testing.B) {
+				filter := store.ListFilter{Query: q.query}
+				for i := 0; i < b.N; i++ {
+					page, err := s.ListContracts(ctx, filter)
+					if err != nil {
+						b.Fatal(err)
+					}
+					if page.Total != q.want {
+						b.Fatalf("query %q matched %d contracts, want %d", q.query, page.Total, q.want)
+					}
+				}
+			})
+		}
+	}
+
+	b.Run("trgm", run)
+
+	// The same searches once the indexes are gone, as on a server where the
+	// migration could not install pg_trgm.
+	if _, err := pool.Exec(ctx, `
+		DROP INDEX contracts_contract_id_trgm, contracts_name_trgm, specs_symbols_trgm;
+		ANALYZE contracts, specs`); err != nil {
+		b.Fatal(err)
+	}
+	pool.Reset() // forget statements planned while the indexes existed
+	b.Run("no-trgm", run)
+}
+
+// seedSearchScale writes searchScaleContracts contracts, each with its current
+// spec, an older spec for about one in five, and a doc comment. Every spec
+// names transfer; twenty current specs also name withdraw_rewards.
+func seedSearchScale(ctx context.Context, pool *pgxpool.Pool) error {
+	_, err := pool.Exec(ctx, fmt.Sprintf(`
+		INSERT INTO contracts (network, contract_id, current_wasm_hash, name, last_refreshed)
+		SELECT CASE WHEN g %% 4 = 0 THEN 'testnet' ELSE 'mainnet' END,
+		       'CBENCH' || lpad(g::text, 7, '0') || upper(substr(md5(g::text), 1, 43)),
+		       md5('w' || g),
+		       CASE WHEN g %% 3 = 0 THEN 'pool-' || g ELSE '' END,
+		       now() - g * interval '1 second'
+		FROM generate_series(1, %[1]d) AS g;
+
+		INSERT INTO specs (network, contract_id, wasm_hash, spec, symbols, docs_tsv)
+		SELECT c.network, c.contract_id, w.hash, '{}'::jsonb,
+		       'balance' || E'\n' || 'fn_' || substr(md5(w.hash), 1, 10) || E'\n' || 'transfer',
+		       to_tsvector('simple', 'returns the balance of ' || substr(md5(c.contract_id), 1, 6))
+		FROM contracts c
+		CROSS JOIN LATERAL (
+		    SELECT c.current_wasm_hash AS hash
+		    UNION ALL
+		    SELECT md5('old' || c.contract_id) WHERE right(c.contract_id, 1) IN ('0', '1', '2')
+		) AS w;
+
+		UPDATE specs s SET symbols = s.symbols || E'\n' || 'withdraw_rewards'
+		FROM (SELECT network, contract_id, current_wasm_hash FROM contracts ORDER BY contract_id LIMIT 20) c
+		WHERE s.network = c.network AND s.contract_id = c.contract_id AND s.wasm_hash = c.current_wasm_hash;
+
+		ANALYZE contracts, specs`, searchScaleContracts))
+	return err
 }

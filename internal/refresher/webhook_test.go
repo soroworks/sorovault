@@ -229,6 +229,33 @@ func TestNewWebhookRejectsABadURL(t *testing.T) {
 	}
 }
 
+// TestNewWebhookEdgeCases exercises boundary inputs: an http URL (not just
+// https), a URL with a scheme but no host, and a minimal URL with no path.
+func TestNewWebhookEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{"http URL is accepted", "http://example.test/hook", false},
+		{"minimal URL with no path is accepted", "https://example.test", false},
+		{"scheme with no host is rejected", "https://", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := refresher.NewWebhook(refresher.WebhookOptions{URL: tt.url})
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
 // TestWebhookPostsTheChange proves the webhook client posts what it is
 // told, and reports a refusal as an error.
 func TestWebhookPostsTheChange(t *testing.T) {

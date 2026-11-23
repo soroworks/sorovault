@@ -71,10 +71,16 @@
           "required": true,
           "content": { "application/json": { "schema": {
             "type": "object",
-            "properties": { "contract_id": { "$ref": "#/components/schemas/ContractID" } },
+            "properties": {
+              "contract_id": { "$ref": "#/components/schemas/ContractID" },
+              "name": { "$ref": "#/components/schemas/ContractName" }
+            },
             "required": ["contract_id"],
             "additionalProperties": false
-          }, "examples": { "zkvote": { "value": { "contract_id": "CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN" } } } } }
+          }, "examples": {
+            "zkvote": { "value": { "contract_id": "CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN" } },
+            "named": { "value": { "contract_id": "CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN", "name": "zkVote" } }
+          } } }
         },
         "responses": {
           "201": { "description": "Newly registered.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RegisterResult" }, "examples": { "zkvote": { "$ref": "#/components/examples/RegisterResult" } } } } },
@@ -180,6 +186,19 @@
         "responses": {
           "200": { "description": "The interface. When the registry signs, the response carries `X-SoroVault-Attestation` and `X-SoroVault-Key-Id` headers.", "headers": { "X-SoroVault-Attestation": { "$ref": "#/components/headers/Attestation" }, "X-SoroVault-Key-Id": { "$ref": "#/components/headers/KeyId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ContractInterface" }, "examples": { "zkvote": { "$ref": "#/components/examples/ContractInterface" } } } } },
           "304": { "$ref": "#/components/responses/NotModified" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "patch": {
+        "summary": "Rename a contract",
+        "description": "Sets a registered contract's display name. The name is trimmed, must not be empty, may be at most 100 characters and must not contain control characters. A refresh never clears a name.",
+        "operationId": "renameContract",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/id" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RenameRequest" }, "examples": { "named": { "value": { "name": "zkVote" } } } } } },
+        "responses": {
+          "200": { "description": "Updated contract metadata.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Contract" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
           "404": { "$ref": "#/components/responses/NotFound" }
         }
       }
@@ -932,6 +951,17 @@
           "code": { "type": "integer", "description": "The status code the contract would have had on its own request." }
         },
         "required": ["contract_id", "status", "created", "changed"]
+      },
+      "ContractName": {
+        "type": "string",
+        "description": "An operator-chosen display name. Trimmed; at most 100 characters; no control characters. Empty keeps the contract's existing name.",
+        "maxLength": 100
+      },
+      "RenameRequest": {
+        "type": "object",
+        "properties": { "name": { "allOf": [{ "$ref": "#/components/schemas/ContractName" }], "minLength": 1 } },
+        "required": ["name"],
+        "additionalProperties": false
       },
       "SourceRequest": {
         "type": "object",

@@ -166,3 +166,29 @@ func TestGoDeclaresContractTypes(t *testing.T) {
 	assert.Regexp(t, `StatusOpen\s+Status = 0`, got)
 	assert.Regexp(t, `StatusClosed\s+Status = 1`, got)
 }
+
+// TestGoNoArgFunction covers functions that take no inputs, such as
+// get_total_votes.  The generated method must call invoke with only the
+// function name and produce no argument-encoding loop.
+func TestGoNoArgFunction(t *testing.T) {
+	t.Parallel()
+
+	iface := &model.Interface{
+		Functions: []model.Function{
+			{
+				Name:    "get_total_votes",
+				Inputs:  nil,
+				Outputs: []model.Type{model.Scalar(model.KindU64)},
+			},
+		},
+	}
+
+	got, err := codegen.Go(iface, src, "zkvote")
+	require.NoError(t, err)
+
+	// The generated method must exist and delegate directly to invoke with no
+	// extra args -- no arg-encoding loop should appear.
+	assert.Contains(t, got, "func (client *Client) GetTotalVotes() (txnbuild.Operation, error) {")
+	assert.Contains(t, got, `return client.invoke("get_total_votes")`)
+	assert.NotContains(t, got, `get_total_votes:`, "a no-arg function must not emit an error-wrapping fmt.Errorf line")
+}

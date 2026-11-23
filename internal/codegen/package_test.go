@@ -43,6 +43,8 @@ func TestPackageVersion(t *testing.T) {
 		{"ABCDEFGHIJKLMN", "0.0.0-abcdefghijkl"},
 		{"0123456789012345", "0.0.0-012345678901"},
 		{"!@#$%^&*()", "0.0.0"},
+		{"---!?@#", "0.0.0"},
+		{"abc123xyz789extras", "0.0.0-abc123xyz789"},
 	}
 
 	for _, tt := range tests {

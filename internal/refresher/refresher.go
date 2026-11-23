@@ -62,6 +62,20 @@ type Options struct {
 	// Wait pauses between scheduled refreshes. Tests replace it to avoid
 	// sleeping; the default respects context cancellation.
 	Wait func(context.Context, time.Duration) error
+	// Observer, when set, is told the outcome of every scheduled sweep,
+	// which is how serve feeds its metrics.
+	Observer SweepObserver
+}
+
+// SweepObserver is told what each scheduled sweep did. Implementations
+// must be safe for concurrent use and must not block.
+type SweepObserver interface {
+	// ObserveSweep records a sweep that completed, with its summary and
+	// the moment it finished.
+	ObserveSweep(sum Summary, completedAt time.Time)
+	// ObserveSweepError records a sweep that could not work out what to
+	// refresh, such as when the RPC endpoint or the store was down.
+	ObserveSweepError()
 }
 
 // Refresher runs periodic sweeps over the registry.
@@ -76,6 +90,8 @@ type Refresher struct {
 
 	events         stellar.UpdateFollower
 	eventsInterval time.Duration
+
+	observer SweepObserver
 
 	mu        sync.Mutex
 	lastSweep *SweepRecord
@@ -113,6 +129,7 @@ func New(reg Registry, opts Options) (*Refresher, error) {
 		log:            log,
 		now:            now,
 		wait:           wait,
+		observer:       opts.Observer,
 	}, nil
 }
 
@@ -190,6 +207,9 @@ func (r *Refresher) sweepAndLog(ctx context.Context) {
 	if err != nil {
 		if ctx.Err() == nil {
 			r.log.WarnContext(ctx, "refresh sweep failed")
+			if r.observer != nil {
+				r.observer.ObserveSweepError()
+			}
 		}
 		return
 	}
@@ -198,6 +218,9 @@ func (r *Refresher) sweepAndLog(ctx context.Context) {
 	r.mu.Lock()
 	r.lastSweep = &record
 	r.mu.Unlock()
+	if r.observer != nil {
+		r.observer.ObserveSweep(sum, record.CompletedAt)
+	}
 
 	r.log.InfoContext(ctx, "refresh sweep complete",
 		"checked", sum.Checked,

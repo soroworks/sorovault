@@ -204,3 +204,43 @@ func TestJSONSchemaRejectsAnEmptyInterface(t *testing.T) {
 	_, err := codegen.JSONSchema(nil, model.Function{Name: "f"}, src)
 	assert.ErrorContains(t, err, "no interface")
 }
+
+// TestJSONSchemaEdgeCases exercises boundary inputs: a function with no
+// parameters, an empty Source, and a UDT that is named but not defined.
+func TestJSONSchemaEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		fn    model.Function
+		iface *model.Interface
+	}{
+		{
+			name:  "function with no inputs produces a valid schema with no required array",
+			fn:    model.Function{Name: "noop"},
+			iface: &model.Interface{},
+		},
+		{
+			name: "empty Source still generates a valid schema",
+			fn: model.Function{Name: "f", Inputs: []model.Param{
+				{Name: "flag", Type: model.Scalar(model.KindBool)},
+			}},
+			iface: &model.Interface{},
+		},
+		{
+			name: "UDT not defined in the interface resolves to an open schema",
+			fn: model.Function{Name: "g", Inputs: []model.Param{
+				{Name: "p", Type: model.Type{Kind: model.KindUDT, Name: "Unknown"}},
+			}},
+			iface: &model.Interface{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := codegen.JSONSchema(tt.iface, tt.fn, codegen.Source{})
+			require.NoError(t, err)
+			compileSchema(t, got)
+		})
+	}
+}

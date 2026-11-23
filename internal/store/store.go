@@ -596,6 +596,11 @@ type Store interface {
 	// UpdateSource attaches repository metadata to an existing contract.
 	UpdateSource(ctx context.Context, network, contractID, sourceURL, sourceCommit string) error
 
+	// SetName sets an existing contract's display name. Validating the name
+	// is the caller's job. It returns ErrNotFound when the contract is not
+	// in the registry.
+	SetName(ctx context.Context, network, contractID, name string) error
+
 	// SetOrigin records who created the contract and in which ledger. Both
 	// must be set; recording an origin is how an unknown one becomes known.
 	SetOrigin(ctx context.Context, network, contractID, creator string, ledger uint32) error
