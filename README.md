@@ -364,8 +364,9 @@ any database that is not on a private loopback network.
 
 `HTTP_ADDR` is the listen address for the JSON API and browse UI (default:
 `:8080`). The default binds on all interfaces; to restrict to loopback, set it
-to `127.0.0.1:8080`. When TLS terminates at a reverse proxy, keep the default
-and let the proxy handle the public side; see the [TLS and the
+to `127.0.0.1:8080`. When TLS terminates at a reverse proxy, bind SoroVault to
+a private address reachable by the proxy (use `127.0.0.1:8080` when both run on
+the same host); see the [TLS and the
 proxy](#tls-and-the-proxy) section in the operations guide. `--addr` overrides
 this variable for the duration of one `serve` invocation.
 

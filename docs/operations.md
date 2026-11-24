@@ -91,7 +91,7 @@ beyond the environment, so arrange the split deliberately.
 replicaCount: 3
 config:
   # Only one dedicated refresher process sweeps; the API replicas do not.
-  refreshInterval: ""   # 0 / unset on the reader Deployment
+  refreshInterval: 0     # disable scheduled sweeps on the reader Deployment
 
 # A separate Deployment or CronJob carries REFRESH_INTERVAL:
 # REFRESH_INTERVAL=6h sorovault serve   (single replica)
@@ -312,20 +312,21 @@ Recommended upgrade order:
 5. Run `sorovault doctor` and check `GET /api/stats` and the logs.
 
 ```console
-# 1. Download and verify the new release
-$ gh release download 1.3.0 --repo soroworks/sorovault \
-    --pattern 'sorovault_1.3.0_linux_amd64.tar.gz*'
-$ gh attestation verify sorovault_1.3.0_linux_amd64.tar.gz \
+# 1. Download and verify a release (replace both version strings to choose another release)
+$ gh release download v0.2.0 --repo soroworks/sorovault \
+    --pattern 'sorovault_0.2.0_linux_amd64.tar.gz*' \
+    --pattern checksums.txt
+$ gh attestation verify sorovault_0.2.0_linux_amd64.tar.gz \
     --repo soroworks/sorovault
 $ sha256sum -c checksums.txt --ignore-missing
 
 # 2. Back up the database first
 $ pg_dump --format=custom --no-owner \
-    --file="sorovault-pre-1.3.0-$(date +%F).dump" "$DATABASE_URL"
+    --file="sorovault-pre-0.2.0-$(date +%F).dump" "$DATABASE_URL"
 
 # 3. Apply migrations with the new binary
 $ ./sorovault migrate
-applied 2 migrations; now at version 21
+applied migrations; now at version <N>
 
 # 4. Roll out the new binary (systemd example)
 $ sudo cp sorovault /usr/local/bin/sorovault
@@ -334,7 +335,7 @@ $ sudo systemctl restart sorovault
 # 5. Confirm health
 $ sorovault doctor
 PASS  database    the database answers
-PASS  migrations  the database is at version 21, the latest is 21
+PASS  migrations  the database is at version <N>, the latest is <N>
 PASS  rpc         the endpoint is reachable, serving testnet
 PASS  passphrase  the endpoint serves the configured network
 ```
@@ -506,8 +507,11 @@ messages.
 
 ## Monitoring
 
-There is no Prometheus metrics endpoint. Monitor the process, the database, RPC
-and the logs; add instrumentation if you need metrics beyond that.
+When `METRICS_ADDR` is set, SoroVault exposes Prometheus metrics on that
+separate address. It is off by default; see the [README metrics reference](../README.md#metrics)
+for the available series. Monitor the process, database, RPC and logs as well:
+webhook delivery failures are reported in the logs and do not have a Prometheus
+metric.
 
 ### Liveness and readiness
 
@@ -565,13 +569,14 @@ only, so a pass does not prove that `getLedgerEntries` is healthy.
   is often the refresh interval being too short.
 
 ```yaml
-# Prometheus alerting rules (Prometheus / Alertmanager format)
+# Prometheus alerting rules (Prometheus / Alertmanager format).
+# Set the 6-hour threshold to match your REFRESH_INTERVAL plus a margin.
 groups:
   - name: sorovault
     rules:
-      # Refresher has not completed a sweep in more than 2× its interval + margin
+      # Refresher has not completed a sweep in more than 3× its interval
       - alert: SoroVaultRefreshStalled
-        expr: time() - sorovault_refresh_last_success_timestamp_seconds > 3 * 6 * 3600
+        expr: sorovault_refresh_last_success_timestamp_seconds > 0 and (time() - sorovault_refresh_last_success_timestamp_seconds > 3 * 6 * 3600)
         annotations:
           summary: "SoroVault refresh sweeps have stalled"
 
@@ -581,12 +586,11 @@ groups:
         annotations:
           summary: "One or more contract refreshes failed"
 
-      # Webhook delivery failed — reconcile from /api/upgrades
-      - alert: SoroVaultWebhookFailed
-        expr: increase(sorovault_refresh_contracts_changed_total[1h]) > 0
-        annotations:
-          summary: "Check refresh webhook failed log lines"
 ```
+
+SoroVault does not expose a webhook failure metric. Route the `refresh webhook
+failed` log line to your log monitoring system and alert on it there; reconcile
+missed notifications from `GET /api/upgrades`.
 
 `LOG_LEVEL=info` gives one line per sweep, per upgrade and per failure.
 `LOG_LEVEL=debug` adds one line per HTTP request and per unchanged contract,
@@ -613,11 +617,11 @@ which is useful while diagnosing but noisy for a large registry.
 ```console
 # Verify the deployment from outside: liveness, then doctor
 $ curl -sS https://registry.example.com/healthz
-{"status":"ok","version":"1.3.0"}
+{"status":"ok","version":"0.2.0"}
 
 $ sorovault doctor
 PASS  database    the database answers
-PASS  migrations  the database is at version 21, the latest is 21
+PASS  migrations  the database is at version <N>, the latest is <N>
 PASS  rpc         the endpoint is reachable, serving testnet
 PASS  passphrase  the endpoint serves the configured network
 
