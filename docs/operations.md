@@ -588,6 +588,10 @@ groups:
 
 ```
 
+Apply the stalled alert only to instances with scheduled refresh enabled
+(`REFRESH_INTERVAL` greater than `0`); reader replicas with refresh disabled
+keep the success timestamp at `0`.
+
 SoroVault does not expose a webhook failure metric. Route the `refresh webhook
 failed` log line to your log monitoring system and alert on it there; reconcile
 missed notifications from `GET /api/upgrades`.
