@@ -18,8 +18,8 @@ help: ## Show this help
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
 # Compile the sorovault binary into ./bin. Run this before distributing or
-# deploying; the output is a trimmed, statically-linked binary with the version
-# embedded from the nearest git tag.
+# deploying; the output is a trimmed binary with the version embedded from the
+# nearest git tag.
 .PHONY: build
 build: ## Build the binary into ./bin
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/$(BINARY)
