@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stellar/go-stellar-sdk/xdr"
 	"github.com/stretchr/testify/assert"
@@ -519,6 +520,63 @@ func TestStoreAccessor(t *testing.T) {
 
 	reg, _, db := newRegistry(t)
 	assert.Same(t, db, reg.Store())
+}
+
+// TestStoreAccessorEdgeCases pins the accessor's behaviour at the edges the
+// happy path does not reach: no store at all, zero-value options, and options
+// that configure the registry around the store.
+func TestStoreAccessorEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		build   func() (*registry.Registry, store.Store)
+		wantNil bool
+	}{
+		{
+			// Empty input: a registry may be constructed before a store is
+			// supplied. The accessor must report the absence rather than
+			// panic or invent a handle.
+			name: "nil store is exposed as nil",
+			build: func() (*registry.Registry, store.Store) {
+				return registry.New(nil, nil, nil, registry.Options{}), nil
+			},
+			wantNil: true,
+		},
+		{
+			// Boundary values: zero is the lower bound of every option, so
+			// the defaults must not disturb the handle it was given.
+			name: "zero-value options keep the handle",
+			build: func() (*registry.Registry, store.Store) {
+				db := store.NewMemory()
+				return registry.New(nil, nil, db, registry.Options{}), db
+			},
+		},
+		{
+			// A configured registry must expose the same handle, not a copy
+			// or a wrapper, since the API and UI query it directly.
+			name: "configured registry keeps the handle",
+			build: func() (*registry.Registry, store.Store) {
+				db := store.NewMemory()
+				return registry.New(nil, nil, db, registry.Options{MaxConcurrent: 1, AcquireTimeout: time.Second}), db
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			reg, want := tt.build()
+			got := reg.Store()
+			if tt.wantNil {
+				assert.Nil(t, got)
+				return
+			}
+			assert.Same(t, want, got)
+			assert.Same(t, got, reg.Store(), "the accessor must return the same handle on every call")
+		})
+	}
 }
 
 // stubDecoder lets a test drive decoder failures that no real module causes.
