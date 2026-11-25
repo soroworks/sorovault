@@ -317,6 +317,63 @@ func TestEnvMetaJSONShape(t *testing.T) {
 	assert.NotContains(t, got, "pre_release", "a zero pre-release number must be omitted")
 }
 
+// TestEnvMetaJSONRoundTrip checks that the environment metadata survives a
+// JSON round trip unchanged, so the ABI consumers decode is what was encoded.
+func TestEnvMetaJSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := model.NewEnvMeta(25, 4)
+
+	data, err := json.Marshal(original)
+	require.NoError(t, err)
+
+	var decoded model.EnvMeta
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	require.Equal(t, original, decoded, "EnvMeta must survive a JSON round trip unchanged")
+}
+
+// TestEnumCaseJSONRoundTrip checks that an enum case survives a JSON round
+// trip unchanged.
+func TestEnumCaseJSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := model.EnumCase{
+		Name:  "Active",
+		Doc:   "The contract is active.",
+		Value: 7,
+	}
+
+	data, err := json.Marshal(original)
+	require.NoError(t, err)
+
+	var decoded model.EnumCase
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	require.Equal(t, original, decoded, "EnumCase must survive a JSON round trip unchanged")
+}
+
+// TestEnumJSONRoundTrip checks that an enum, including its cases, survives a
+// JSON round trip unchanged.
+func TestEnumJSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := model.Enum{
+		Name: "Status",
+		Doc:  "The status of a listing.",
+		Lib:  "contracts/listing",
+		Cases: []model.EnumCase{
+			{Name: "Active", Doc: "The listing is active.", Value: 1},
+			{Name: "Sold", Value: 2},
+		},
+	}
+
+	data, err := json.Marshal(original)
+	require.NoError(t, err)
+
+	var decoded model.Enum
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	require.Equal(t, original, decoded, "Enum must survive a JSON round trip unchanged")
+}
+
 func TestStellarAssetContractInterface(t *testing.T) {
 	t.Parallel()
 
