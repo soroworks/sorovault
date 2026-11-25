@@ -5,9 +5,11 @@
 ## How it was tested
 
 <!-- The tests you added, and anything you ran by hand. -->
+<!-- Example: `go test ./internal/mcp` -->
 
 ## Checklist
 
+<!-- Example: [x] `make check` passes locally -->
 - [ ] `make check` passes locally (gofmt, vet, tests)
 - [ ] New behaviour has tests that need neither a network nor a database
 - [ ] README / `.env.example` updated if a flag, variable or output changed
