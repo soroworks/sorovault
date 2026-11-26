@@ -14,7 +14,7 @@ import (
 
 // readLog builds a logger at level, writes one line at each level through
 // it, and returns what reached the file.
-func readLog(t *testing.T, level slog.Level) string {
+func readLog(t *testing.T, cfg *config.Config) string {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "sorovault.log")
@@ -22,7 +22,6 @@ func readLog(t *testing.T, level slog.Level) string {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = f.Close() })
 
-	cfg := &config.Config{LogLevel: level}
 	logger := cfg.NewLogger(f)
 	require.NotNil(t, logger)
 
@@ -40,7 +39,7 @@ func readLog(t *testing.T, level slog.Level) string {
 func TestNewLoggerWritesTextAtTheConfiguredLevel(t *testing.T) {
 	t.Parallel()
 
-	out := readLog(t, slog.LevelInfo)
+	out := readLog(t, &config.Config{LogLevel: slog.LevelInfo})
 
 	assert.NotContains(t, out, "debug line")
 	assert.Contains(t, out, "level=INFO msg=\"info line\" contract=CABC")
@@ -51,15 +50,39 @@ func TestNewLoggerWritesTextAtTheConfiguredLevel(t *testing.T) {
 func TestNewLoggerAtDebugKeepsEverything(t *testing.T) {
 	t.Parallel()
 
-	assert.Contains(t, readLog(t, slog.LevelDebug), "msg=\"debug line\"")
+	assert.Contains(t, readLog(t, &config.Config{LogLevel: slog.LevelDebug}), "msg=\"debug line\"")
 }
 
 func TestNewLoggerAtErrorDropsLowerLevels(t *testing.T) {
 	t.Parallel()
 
-	out := readLog(t, slog.LevelError)
+	out := readLog(t, &config.Config{LogLevel: slog.LevelError})
 
 	assert.NotContains(t, out, "info line")
 	assert.NotContains(t, out, "warn line")
 	assert.Contains(t, out, "error line")
+}
+
+func TestNewLoggerFallsBackToTextForUnsetOrUnknownFormat(t *testing.T) {
+	tests := []struct {
+		name   string
+		format string
+	}{
+		{name: "unset format"},
+		{name: "unknown format", format: "yaml"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			out := readLog(t, &config.Config{
+				LogLevel:  slog.LevelInfo,
+				LogFormat: tt.format,
+			})
+
+			assert.Contains(t, out, `level=INFO msg="info line" contract=CABC`)
+			assert.NotContains(t, out, "{")
+		})
+	}
 }

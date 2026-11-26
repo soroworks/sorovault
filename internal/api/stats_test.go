@@ -122,3 +122,46 @@ func TestStatsReportsTheLastRefreshSweep(t *testing.T) {
 	assert.Equal(t, float64(3), last["missing"])
 	assert.Equal(t, completed.Format(time.RFC3339), last["completed_at"])
 }
+
+// TestSetLastSweepEdgeCases covers boundary inputs that the happy-path test
+// does not: a second SetLastSweep call overwriting the first, and a completed
+// sweep whose every counter is zero.
+func TestSetLastSweepEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	t.Run("second call overwrites the first", func(t *testing.T) {
+		t.Parallel()
+
+		h := newHarness(t)
+
+		// Wire in a completed sweep ...
+		h.api.SetLastSweep(func() (refresher.SweepRecord, bool) {
+			return refresher.SweepRecord{Summary: refresher.Summary{Checked: 5}}, true
+		})
+		// ... then replace it with one that has not finished yet.
+		h.api.SetLastSweep(func() (refresher.SweepRecord, bool) { return refresher.SweepRecord{}, false })
+
+		resp, raw := h.do(t, http.MethodGet, "/api/stats", "")
+		require.Equal(t, http.StatusOK, resp.StatusCode, string(raw))
+		assert.NotContains(t, h.decode(t, raw), "last_refresh",
+			"the second SetLastSweep must replace the first")
+	})
+
+	t.Run("all-zero SweepRecord is still reported when ok is true", func(t *testing.T) {
+		t.Parallel()
+
+		h := newHarness(t)
+
+		h.api.SetLastSweep(func() (refresher.SweepRecord, bool) {
+			return refresher.SweepRecord{}, true
+		})
+
+		resp, raw := h.do(t, http.MethodGet, "/api/stats", "")
+		require.Equal(t, http.StatusOK, resp.StatusCode, string(raw))
+
+		last, ok := h.decode(t, raw)["last_refresh"].(map[string]any)
+		require.True(t, ok, "last_refresh must be present when the sweep fn returns true")
+		assert.Equal(t, float64(0), last["checked"])
+		assert.Equal(t, float64(0), last["changed"])
+	})
+}

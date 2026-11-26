@@ -32,7 +32,23 @@ $ go run ./cmd/sorovault migrate
 $ go run ./cmd/sorovault serve
 ```
 
+For example, to verify everything works by registering the testnet zkvote contract against a running server:
+
+```console
+$ curl -sS -X POST http://localhost:8080/api/contracts \
+    -H 'content-type: application/json' \
+    -d '{"contract_id":"CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN"}'
+```
+
 ## Before you open a pull request
+
+For example, before submitting changes to the codebase, verify that everything builds and tests pass cleanly:
+
+```console
+$ make check
+```
+
+Or run the checks individually:
 
 ```console
 $ make lint        # go vet + gofmt check
@@ -56,6 +72,12 @@ invariants behind them, see [ARCHITECTURE.md](ARCHITECTURE.md).
 | read contracts from somewhere else | implement `stellar.Fetcher` |
 | change the browse UI | `internal/web` |
 
+For example, to add an optional field to the API response for contracts, inspect the handler and model packages like this:
+
+```go
+// internal/api/api.go handles the endpoint request and populates internal/model.
+```
+
 ## Good first issues
 
 These are real gaps, roughly easiest first:
@@ -72,6 +94,14 @@ These are real gaps, roughly easiest first:
    `GET /api/contracts/{id}`. This is a substantial project and deserves an
    issue to discuss the approach before code.
 
+For example, to register a contract via the API when tackling a task:
+
+```bash
+curl -sS -X POST "http://localhost:8080/api/contracts" \
+    -H "content-type: application/json" \
+    -d '{"contract_id":"CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN"}'
+```
+
 Please open an issue before starting on anything large, so nobody duplicates
 work.
 
@@ -86,6 +116,14 @@ Nothing exotic — write Go that looks like the Go already here.
   `fmt.Errorf("store: loading contract %s: %w", id, err)`. Sentinel errors
   (`store.ErrNotFound`, `stellar.ErrNoWasm`) are how callers make decisions —
   add one when a caller would otherwise have to match on a string.
+
+  For example:
+
+  ```go
+  if err != nil {
+      return fmt.Errorf("store: loading contract %s: %w", id, err)
+  }
+  ```
 - **Keep packages narrow.** `internal/model` depends on nothing; keep it that
   way, since it is what external consumers of the ABI mirror.
 - **Log with `slog`**, and pass the logger in rather than reaching for a global.
@@ -108,9 +146,39 @@ Each workflow and job also declares the permissions it needs, and no more:
 `contents: read` is enough for almost every job here, and a job that
 really writes something says so.
 
+For example, a complete CI workflow job looks like this:
+
+```yaml
+name: CI
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+      - name: Test
+        run: go test -race ./...
+```
+
 ## Testing
 
 The rules that matter:
+
+For example, a unit test that verifies a contract function's schema or behavior without network or database dependencies looks like this:
+
+```go
+func TestContractBehavior(t *testing.T) {
+	// Use check-in fixtures or fakes for isolated testing
+	assert.True(t, true, "testing rules must remain offline")
+}
+```
 
 - **`go test ./...` must never need the network or a database.** This is not
   negotiable; it is what keeps the project pleasant to contribute to. Use the
@@ -132,6 +200,17 @@ provenance is recorded in
 [`internal/spec/testdata/README.md`](internal/spec/testdata/README.md), and a
 test checks its SHA-256 against the on-chain hash it is named for.
 
+For example, a test that needs the fixture reads the checked-in bytes and feeds
+them to the same decoder the fetch path uses — no network involved:
+
+```go
+module, err := os.ReadFile("testdata/zkvote.wasm")
+require.NoError(t, err)
+
+iface, err := spec.XDRDecoder{}.Decode(module)
+require.NoError(t, err)
+```
+
 If you intentionally change the ABI output shape, regenerate the golden file:
 
 ```console
@@ -149,11 +228,43 @@ than hand-rolling a module — real contracts have the quirks that matter. Keep
 it small, and add it to the testdata README with its contract ID, hash and the
 date you fetched it.
 
+For example, this is how the existing fixture can be fetched from testnet —
+substitute the ID of the contract you need, and copy the result into testdata
+under a descriptive name:
+
+```console
+$ stellar contract fetch \
+    --network-passphrase 'Test SDF Network ; September 2015' \
+    --rpc-url https://soroban-testnet.stellar.org \
+    --id CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN \
+    --out-file /tmp/zkvote.wasm
+$ sha256sum /tmp/zkvote.wasm
+c618dae264864ccf446a3c7db27da80c7c83e840131242cc2fe9cd32a2a20781  /tmp/zkvote.wasm
+```
+
+Record that hash, the contract ID, the SDK version and the fetch date in the
+testdata README.
+
 ## Changing the ABI JSON
 
 `internal/model` is the project's public contract; other tools parse it. Adding
 an optional field is fine. Renaming or removing one, or changing a type, is a
 breaking change and needs `model.ABIVersion` bumped and a note in the README.
+
+For example, adding an optional `"since"` field to a function leaves
+`abi_version` at `"1"`. Renaming `"inputs"` to `"arguments"` would break every
+reader that expects the old name, so the change has to be marked:
+
+```diff
+-  "abi_version": "1",
+-  "inputs": []
++  "abi_version": "2",
++  "arguments": []
+```
+
+That means changing `model.ABIVersion` to `"2"` in `internal/model/abi.go` and
+describing the new shape in the README's ABI section. Adding the optional field
+needs neither.
 
 If you find yourself wanting to break it, open an issue first.
 
@@ -170,7 +281,30 @@ Useful primary sources:
 - [`stellar/go-stellar-sdk`](https://github.com/stellar/go-stellar-sdk) — the `xdr` and `clients/rpcclient` packages
 - [Stellar RPC `getLedgerEntries`](https://developers.stellar.org/docs/data/apis/rpc/api-reference/methods/getLedgerEntries)
 
+For example, print the toolchain and SDK versions, ask the live endpoint which
+network and protocol it serves, and run the opt-in smoke test over the real
+fetch path (a plain `go test ./...` skips it, so it never needs the network):
+
+```console
+$ go version
+$ go list -m github.com/stellar/go-stellar-sdk
+$ curl -s https://soroban-testnet.stellar.org \
+    -H 'content-type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"getNetworkInfo","params":{}}' \
+    | jq '.result | {protocol: .protocol_version, passphrase}'
+$ SOROVAULT_LIVE=1 go test -run TestLiveSmoke -v ./internal/stellar
+```
+
+Compare what those print with the README's verification table and update the
+table with what you actually observed, including the date.
+
 ## Licence
 
 By contributing you agree that your contributions are licensed under
 Apache-2.0, the same as the project.
+
+For new source files, a short SPDX header is sufficient:
+
+```go
+// SPDX-License-Identifier: Apache-2.0
+```

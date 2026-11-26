@@ -239,6 +239,52 @@ func runStoreSuite(t *testing.T, newStore factory) {
 		assert.Equal(t, "https://github.com/example/repo", got.SourceURL, "refresh must preserve source metadata")
 	})
 
+	t.Run("names round-trip and survive a refresh", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+
+		named := contract(idA, "testnet", "hash1")
+		named.Name = "Example Token"
+		require.NoError(t, s.Save(ctx, named, iface("balance")))
+
+		got, err := s.GetContract(ctx, "testnet", idA)
+		require.NoError(t, err)
+		assert.Equal(t, "Example Token", got.Name, "a name passed to Save is stored")
+
+		// A refresh saves with an empty name, which must keep the
+		// existing one rather than clear it — both for an unchanged
+		// contract and for an upgrade.
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "hash1"), iface("balance")))
+		got, err = s.GetContract(ctx, "testnet", idA)
+		require.NoError(t, err)
+		assert.Equal(t, "Example Token", got.Name, "a refresh must not clear the name")
+
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "hash2"), iface("balance")))
+		got, err = s.GetContract(ctx, "testnet", idA)
+		require.NoError(t, err)
+		assert.Equal(t, "Example Token", got.Name, "an upgrade must not clear the name")
+
+		require.NoError(t, s.SetName(ctx, "testnet", idA, "Renamed Token"))
+		got, err = s.GetContract(ctx, "testnet", idA)
+		require.NoError(t, err)
+		assert.Equal(t, "Renamed Token", got.Name, "SetName replaces the name")
+
+		page, err := s.ListContracts(ctx, store.ListFilter{Query: "renamed"})
+		require.NoError(t, err)
+		assert.Equal(t, []string{idA}, pageIDs(page), "search matches the name")
+		require.Len(t, page.Contracts, 1)
+		assert.Equal(t, "Renamed Token", page.Contracts[0].Name, "listings carry the name")
+
+		snapshot, err := s.Export(ctx)
+		require.NoError(t, err)
+		require.Len(t, snapshot.Contracts, 1)
+		assert.Equal(t, "Renamed Token", snapshot.Contracts[0].Contract.Name, "exports carry the name")
+
+		assert.ErrorIs(t, s.SetName(ctx, "testnet", idB, "Nobody"), store.ErrNotFound)
+		assert.ErrorIs(t, s.SetName(ctx, "public", idA, "Wrong network"), store.ErrNotFound,
+			"a name is set on one network only")
+	})
+
 	t.Run("a deprecation mark survives refresh and clears cleanly", func(t *testing.T) {
 		s := newStore(t)
 		ctx := context.Background()
@@ -826,6 +872,65 @@ func runStoreSuite(t *testing.T, newStore factory) {
 		require.NoError(t, err)
 		assert.Empty(t, page.Contracts)
 		assert.Equal(t, 2, page.Total)
+	})
+
+	// Trigram indexes cannot narrow a query under three characters, so
+	// Postgres reads more of the table for these. The results must not
+	// change: each source (ID, name, symbol) still matches on its own.
+	t.Run("one- and two-character queries still match", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+
+		// Every letter, and most digits, appear in idA or idB, so the
+		// queries that must hit only a symbol or a name use 8 and 9, which
+		// appear in neither ID.
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h1"), iface("mint_88")))
+		require.NoError(t, s.Save(ctx, contract(idB, "testnet", "h2"), iface("burn")))
+		require.NoError(t, s.SetName(ctx, "testnet", idB, "vault 99"))
+
+		for _, tc := range []struct {
+			query string
+			want  []string
+		}{
+			{"8", []string{idA}},       // symbol only
+			{"88", []string{idA}},      // symbol only
+			{"9", []string{idB}},       // name only
+			{"99", []string{idB}},      // name only
+			{"pa", []string{idA}},      // ID only, any case
+			{"cd", []string{idA, idB}}, // every ID
+			{"zz", []string{idA, idB}}, // every ID
+			{"0", []string{}},          // nowhere
+			{"u", []string{idA, idB}},  // ID of one, name and symbol of the other
+		} {
+			page, err := s.ListContracts(ctx, store.ListFilter{Query: tc.query})
+			require.NoError(t, err, tc.query)
+			assert.ElementsMatch(t, tc.want, pageIDs(page), "query %q", tc.query)
+			assert.Equal(t, len(tc.want), page.Total, "query %q", tc.query)
+		}
+	})
+
+	// Postgres finds candidates for a query in separate passes over the ID
+	// and name, the symbols, and the docs. A contract that matches in all of
+	// them must still be listed, and counted, exactly once.
+	t.Run("a contract matching in every field is listed once", func(t *testing.T) {
+		s := newStore(t)
+		ctx := context.Background()
+
+		everywhere := iface("cdzzx_claim")
+		everywhere.Functions[0].Doc = "Cdzzx claims are paid out here."
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "h1"), everywhere))
+		require.NoError(t, s.SetName(ctx, "testnet", idA, "cdzzx pool"))
+		require.NoError(t, s.Save(ctx, contract(idB, "testnet", "h2"), iface("other")))
+
+		page, err := s.ListContracts(ctx, store.ListFilter{Query: "cdzzx"})
+		require.NoError(t, err)
+		assert.Equal(t, []string{idA}, pageIDs(page))
+		assert.Equal(t, 1, page.Total)
+
+		page, err = s.ListContracts(ctx, store.ListFilter{Query: "claim"})
+		require.NoError(t, err)
+		assert.Equal(t, []string{idA}, pageIDs(page), "a symbol and a doc match together count once")
+		assert.Equal(t, 1, page.Total)
 	})
 
 	t.Run("wildcards in a query are literal", func(t *testing.T) {

@@ -50,6 +50,27 @@ export const Errors: Record<number, { message: string }> = {
   7: { message: "WrongPubSignalsLen" },
 };
 
+/** Prefix topics of the Voted event, to filter on. */
+export const VotedEventPrefix = ["voted"] as const;
+
+/** Parameters of the Voted event published as topics, after the prefix topics, in this order. */
+export interface VotedEventTopics {
+  voter: string;
+}
+
+/** Data payload of the Voted event: a map keyed by parameter name. */
+export interface VotedEventData {
+  proposal_index: sdk.u32;
+}
+
+/**
+ * The Voted event, as the SDK decodes it.
+ */
+export interface VotedEvent {
+  topics: VotedEventTopics;
+  data: VotedEventData;
+}
+
 /** Typed methods of the contract. Each one simulates on call; sign and send the result to submit. */
 export interface Client {
   /**

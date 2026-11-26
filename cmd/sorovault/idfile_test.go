@@ -50,3 +50,38 @@ func TestAddAndRefreshAcceptFromFile(t *testing.T) {
 	assert.NoError(t, refresh.Flags().Set("all", "true"))
 	assert.Error(t, refresh.Args(refresh, nil), "--all cannot combine with --from-file")
 }
+
+// TestAddNameAppliesToOneContract proves --name is refused unless exactly one
+// contract ID is given, since one name cannot belong to several contracts.
+func TestAddNameAppliesToOneContract(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		args     []string
+		fromFile string
+		wantErr  bool
+	}{
+		{name: "one contract", args: []string{"a"}},
+		{name: "two contracts", args: []string{"a", "b"}, wantErr: true},
+		{name: "from a file", fromFile: "ids.txt", wantErr: true},
+		{name: "one contract and a file", args: []string{"a"}, fromFile: "ids.txt", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			add := newAddCmd()
+			require.NoError(t, add.Flags().Set("name", "Example Token"))
+			if tt.fromFile != "" {
+				require.NoError(t, add.Flags().Set("from-file", tt.fromFile))
+			}
+			err := add.Args(add, tt.args)
+			if tt.wantErr {
+				assert.ErrorContains(t, err, "--name applies to a single contract")
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
+}

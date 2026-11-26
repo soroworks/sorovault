@@ -252,6 +252,14 @@ func TestPrintRegisterResult(t *testing.T) {
 			},
 			want: "already current",
 		},
+		{
+			name: "named contract",
+			result: &registry.Result{
+				Contract: store.Contract{ContractID: "C1", Network: "testnet", CurrentWasmHash: "abc", Name: "Example Token"},
+				Created:  true,
+			},
+			want: "name       Example Token",
+		},
 	}
 
 	for _, tt := range tests {

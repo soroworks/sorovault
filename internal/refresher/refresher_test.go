@@ -175,6 +175,31 @@ func TestNewRejectsNonPositiveInterval(t *testing.T) {
 	}
 }
 
+// TestNewIntervalBoundaries adds the boundary cases the loop above does not
+// cover: the minimum positive value that must succeed, and -1ns (the first
+// value below zero) that must fail.
+func TestNewIntervalBoundaries(t *testing.T) {
+	t.Parallel()
+
+	for name, d := range map[string]time.Duration{
+		"negative one nanosecond": -time.Nanosecond,
+		"zero nanoseconds":        0,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := refresher.New(newFixture(t).reg, refresher.Options{Interval: d})
+			assert.Error(t, err, "non-positive interval %s must be rejected", d)
+		})
+	}
+
+	t.Run("minimum positive one nanosecond", func(t *testing.T) {
+		t.Parallel()
+		r, err := refresher.New(newFixture(t).reg, refresher.Options{Interval: time.Nanosecond})
+		require.NoError(t, err)
+		assert.NotNil(t, r)
+	})
+}
+
 // TestLastSweepReportsTheMostRecentSweep proves the in-memory summary the
 // statistics endpoint reads is recorded once Run completes a sweep, and not
 // before.
@@ -545,4 +570,94 @@ func TestRunStopsOnCancel(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not return after cancellation")
 	}
+}
+
+// TestLastSweepEdgeCases covers the boundary conditions that
+// TestLastSweepReportsTheMostRecentSweep does not: calling Sweep directly
+// (which must not update LastSweep) and an empty registry (whose sweep
+// produces an all-zero summary rather than leaving LastSweep unset).
+func TestLastSweepEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	t.Run("direct Sweep call does not update LastSweep", func(t *testing.T) {
+		t.Parallel()
+		f := newFixture(t)
+		f.register(t, contractID(t, 1), "hello")
+		f.clock.Advance(interval + time.Minute)
+		r := f.refresher(t)
+
+		sum, err := r.Sweep(context.Background())
+		require.NoError(t, err)
+		require.Equal(t, 1, sum.Checked)
+
+		_, ok := r.LastSweep()
+		assert.False(t, ok, "Sweep alone must not record a LastSweep entry; only the Run loop does")
+	})
+
+	t.Run("empty registry produces a zero-summary record on the first Run sweep", func(t *testing.T) {
+		t.Parallel()
+		f := newFixture(t)
+		r := f.refresher(t)
+
+		_, ok := r.LastSweep()
+		require.False(t, ok, "no sweep has run yet")
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- r.Run(ctx) }()
+
+		require.Eventually(t, func() bool {
+			_, ok := r.LastSweep()
+			return ok
+		}, 5*time.Second, 10*time.Millisecond)
+
+		record, ok := r.LastSweep()
+		require.True(t, ok)
+		assert.Equal(t, refresher.Summary{}, record.Summary,
+			"a sweep over an empty registry produces an all-zero summary, not a missing entry")
+
+		cancel()
+		require.NoError(t, <-done)
+	})
+}
+
+// TestRunEdgeCases covers the boundary conditions that TestRunStopsOnCancel
+// does not: a pre-cancelled context (must not spin) and a network failure on
+// the first sweep (must retry on the next tick rather than stopping Run).
+func TestRunEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	t.Run("pre-cancelled context returns nil without spinning", func(t *testing.T) {
+		t.Parallel()
+		f := newFixture(t)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		done := make(chan error, 1)
+		go func() { done <- f.refresher(t).Run(ctx) }()
+
+		select {
+		case err := <-done:
+			assert.NoError(t, err)
+		case <-time.After(5 * time.Second):
+			t.Fatal("Run did not return quickly on a pre-cancelled context")
+		}
+	})
+
+	t.Run("a failing sweep is retried rather than stopping Run", func(t *testing.T) {
+		t.Parallel()
+		f := newFixture(t)
+		f.fake.NetworkErr = errors.New("rpc down")
+		r := f.refresher(t)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+
+		err := r.Run(ctx)
+		assert.NoError(t, err, "Run must return nil on context expiry, not the sweep error")
+
+		_, ok := r.LastSweep()
+		assert.False(t, ok, "a failed sweep must not be recorded in LastSweep")
+	})
 }

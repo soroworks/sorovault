@@ -29,6 +29,7 @@ func newAddCmd() *cobra.Command {
 	var (
 		asJSON   bool
 		fromFile string
+		name     string
 	)
 
 	cmd := &cobra.Command{
@@ -39,10 +40,16 @@ embedded in it, and store the result.
 
 Adding a contract that is already registered is not an error: it re-checks
 the contract against the network and records a new interface version if the
-contract has been upgraded since it was last seen.`,
+contract has been upgraded since it was last seen.
+
+--name gives a single contract a display name, which the browse UI shows and
+search matches. Adding again without --name keeps the existing name.`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 && fromFile == "" {
 				return fmt.Errorf("at least one contract ID is required, or use --from-file")
+			}
+			if cmd.Flags().Changed("name") && (len(args) != 1 || fromFile != "") {
+				return fmt.Errorf("--name applies to a single contract; pass exactly one contract ID and no --from-file")
 			}
 			return nil
 		},
@@ -54,13 +61,23 @@ contract has been upgraded since it was last seen.`,
 			if len(contractIDs) == 0 {
 				return fmt.Errorf("no contract IDs found")
 			}
+			if cmd.Flags().Changed("name") {
+				normalized, err := registry.NormalizeName(name)
+				if err != nil {
+					return err
+				}
+				if normalized == "" {
+					return fmt.Errorf("--name must not be empty")
+				}
+				name = normalized
+			}
 
 			return withApp(cmd.Context(), func(ctx context.Context, a *app) error {
 				var failed int
 
 				for _, contractID := range contractIDs {
 					fetchCtx, cancel := a.fetchContext(ctx)
-					result, err := a.registry.Register(fetchCtx, contractID)
+					result, err := a.registry.RegisterNamed(fetchCtx, contractID, name)
 					cancel()
 
 					if err != nil {
@@ -88,6 +105,7 @@ contract has been upgraded since it was last seen.`,
 
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the full result as JSON")
 	cmd.Flags().StringVar(&fromFile, "from-file", "", "read contract IDs from a file (one per line; use - for stdin)")
+	cmd.Flags().StringVar(&name, "name", "", fmt.Sprintf("display name for the contract (single contract only; at most %d characters)", registry.MaxNameLength))
 	return cmd
 }
 
@@ -642,20 +660,26 @@ func newCodegenCmd() *cobra.Command {
 The client is generated from what SoroVault already holds, so no network
 access is needed. --wasm-hash generates against a superseded version.
 
-Supported formats are TypeScript (ts), Markdown (md) and example argument
-lists (examples): one example argument object per function, keyed by
-function name. With --package the output is a complete npm package: the
-client under src/, a package.json that pins @stellar/stellar-sdk and buffer
-as peer dependencies, a tsconfig.json and a README, ready to publish or
-install from a tarball.`,
+Supported formats are TypeScript (ts), Go (go), Python (py), Markdown (md)
+and example argument lists (examples): one example argument object per
+function, keyed by function name. With --lang go the output is a Go client
+that builds on github.com/stellar/go-stellar-sdk, one method per function
+returning an invocation operation; --name sets its package name. With
+--lang py the output is a Python client that builds on stellar-sdk, one
+method per function returning the SDK's AssembledTransaction. With --package
+the output is a complete npm package: the client under src/, a package.json
+that pins @stellar/stellar-sdk and buffer as peer dependencies, a tsconfig.json
+and a README, ready to publish or install from a tarball.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if lang != "ts" && lang != "typescript" && lang != "md" && lang != "markdown" && lang != "examples" {
-				return fmt.Errorf("unsupported --lang %q (supported: ts, md, examples)", lang)
+			if lang != "ts" && lang != "typescript" && lang != "md" && lang != "markdown" &&
+				lang != "examples" && lang != "go" && lang != "golang" && lang != "py" && lang != "python" {
+				return fmt.Errorf("unsupported --lang %q (supported: ts, go, py, md, examples)", lang)
 			}
 			if asPackage {
-				if lang == "md" || lang == "markdown" {
-					return fmt.Errorf("--package writes a TypeScript package, so --lang md cannot be packaged")
+				if lang == "md" || lang == "markdown" || lang == "go" || lang == "golang" ||
+					lang == "py" || lang == "python" {
+					return fmt.Errorf("--package writes a TypeScript package, so --lang %s cannot be packaged", lang)
 				}
 				if lang == "examples" {
 					return fmt.Errorf("--package writes a TypeScript package, so --lang examples cannot be packaged")
@@ -722,6 +746,14 @@ install from a tarball.`,
 				switch lang {
 				case "md", "markdown":
 					source, err = codegen.Markdown(stored.Interface, src)
+				case "go", "golang":
+					pkg := strings.TrimSpace(packageName)
+					if pkg == "" {
+						pkg = "contract"
+					}
+					source, err = codegen.Go(stored.Interface, src, pkg)
+				case "py", "python":
+					source, err = codegen.Python(stored.Interface, src)
 				case "examples":
 					var body []byte
 					body, err = codegen.Examples(stored.Interface, src)
@@ -748,11 +780,11 @@ install from a tarball.`,
 
 	cmd.Flags().StringVar(&network, "network", "", "network to read from (default: the network RPC_URL serves)")
 	cmd.Flags().StringVar(&wasmHash, "wasm-hash", "", "generate for a specific version instead of the current one")
-	cmd.Flags().StringVar(&lang, "lang", "ts", "output format (ts, md or examples)")
+	cmd.Flags().StringVar(&lang, "lang", "ts", "output format (ts, go, py, md or examples)")
 	cmd.Flags().BoolVar(&withZod, "zod", false, "append Zod schemas to the TypeScript output (ts only)")
 	cmd.Flags().StringVarP(&output, "output", "o", "", "write to this file, or this directory with --package")
 	cmd.Flags().BoolVar(&asPackage, "package", false, "write a complete npm package instead of one file")
-	cmd.Flags().StringVar(&packageName, "name", "", "npm package name for --package (@scope/name)")
+	cmd.Flags().StringVar(&packageName, "name", "", "npm package name for --package (@scope/name), or Go package name for --lang go")
 	cmd.Flags().StringVar(&pkgVersion, "package-version", "", "version for --package (default: derived from the WASM hash)")
 	registerContractIDCompletion(cmd)
 	registerNetworkCompletion(cmd)
@@ -1265,6 +1297,9 @@ func printRegisterResult(w io.Writer, r *registry.Result) {
 	}
 
 	_, _ = fmt.Fprintf(w, "%s %s on %s\n", r.Contract.ContractID, verb, r.Contract.Network)
+	if r.Contract.Name != "" {
+		_, _ = fmt.Fprintf(w, "  name       %s\n", r.Contract.Name)
+	}
 	_, _ = fmt.Fprintf(w, "  wasm hash  %s\n", r.Contract.CurrentWasmHash)
 	printOrigin(w, r.Contract)
 

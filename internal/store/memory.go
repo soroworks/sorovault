@@ -371,6 +371,23 @@ func (m *Memory) UpdateSource(ctx context.Context, network, contractID, sourceUR
 	return nil
 }
 
+// SetName sets an existing contract's display name.
+func (m *Memory) SetName(ctx context.Context, network, contractID, name string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := key(network, contractID)
+	c, ok := m.contracts[k]
+	if !ok {
+		return fmt.Errorf("%w: contract %s on %s", ErrNotFound, contractID, network)
+	}
+	c.Name = name
+	m.contracts[k] = c
+	return nil
+}
+
 // SetOrigin records who created a contract and in which ledger.
 func (m *Memory) SetOrigin(ctx context.Context, network, contractID, creator string, ledger uint32) error {
 	if err := ctx.Err(); err != nil {

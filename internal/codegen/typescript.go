@@ -157,6 +157,7 @@ func TypeScript(iface *model.Interface, src Source) (string, error) {
 		g.writeEnum(e)
 	}
 	g.writeErrors(iface.Types.ErrorEnums)
+	g.writeEvents(iface)
 	g.writeClient(iface.Functions)
 	if src.WithZod {
 		g.writeZod(iface)
@@ -280,6 +281,174 @@ func (g *tsGen) writeErrors(enums []model.ErrorEnum) {
 		fmt.Fprintf(&g.b, "  %d: { message: %q },\n", code, byCode[code].message)
 	}
 	g.b.WriteString("};\n")
+}
+
+// eventNames are the identifiers one event's declarations use.
+type eventNames struct {
+	event, prefix, topics, data string
+}
+
+// eventIdentifiers decides the names every event's declarations take.
+//
+// Each event declares <Name>Event, <Name>EventPrefix, <Name>EventTopics and
+// <Name>EventData, so an event and a type of the same name — an event and a
+// struct both called Transfer — never meet. Should a declared type already
+// use one of those names (a struct called TransferEvent, say), the event's
+// names all take the same trailing underscores until none of them clash, so
+// the four stay recognisably one family.
+func eventIdentifiers(iface *model.Interface) map[string]eventNames {
+	taken := map[string]bool{"interfaceId": true}
+	for name := range reservedTypeNames {
+		taken[name] = true
+	}
+	for _, s := range iface.Types.Structs {
+		taken[typeName(s.Name)] = true
+	}
+	for _, u := range iface.Types.Unions {
+		taken[typeName(u.Name)] = true
+	}
+	for _, e := range iface.Types.Enums {
+		taken[typeName(e.Name)] = true
+	}
+
+	out := map[string]eventNames{}
+	for _, e := range sortedBy(iface.Events, func(e model.Event) string { return e.Name }) {
+		base := e.Name
+		if !identifier.MatchString(base) {
+			base = fmt.Sprintf("ContractEvent_%x", e.Name)
+		}
+		for {
+			n := eventNames{
+				event:  base + "Event",
+				prefix: base + "EventPrefix",
+				topics: base + "EventTopics",
+				data:   base + "EventData",
+			}
+			if !taken[n.event] && !taken[n.prefix] && !taken[n.topics] && !taken[n.data] {
+				taken[n.event], taken[n.prefix], taken[n.topics], taken[n.data] = true, true, true, true
+				out[e.Name] = n
+				break
+			}
+			base += "_"
+		}
+	}
+	return out
+}
+
+// writeEvents declares the shape of every event the contract publishes, so
+// a consumer indexing them need not write those types by hand.
+//
+// For each event it emits the prefix topics as a readonly tuple constant to
+// filter on, an interface of the parameters published as topics (after the
+// prefix, in order), the data payload shaped by the event's data format,
+// and an interface joining the two. Values follow the SDK's scValToNative
+// decoding: a map payload is an object keyed by parameter name, a vec
+// payload a tuple, and a single-value payload the value itself.
+func (g *tsGen) writeEvents(iface *model.Interface) {
+	if len(iface.Events) == 0 {
+		return
+	}
+	names := eventIdentifiers(iface)
+	for _, e := range sortedBy(iface.Events, func(e model.Event) string { return e.Name }) {
+		g.writeEvent(e, names[e.Name])
+	}
+}
+
+func (g *tsGen) writeEvent(e model.Event, n eventNames) {
+	var topics, data []model.EventParam
+	for _, p := range e.Params {
+		if p.Location == "topic-list" {
+			topics = append(topics, p)
+		} else {
+			data = append(data, p)
+		}
+	}
+
+	g.b.WriteString("\n")
+	fmt.Fprintf(&g.b, "/** Prefix topics of the %s event, to filter on. */\n", commentText(e.Name))
+	quoted := make([]string, len(e.Prefix))
+	for i, t := range e.Prefix {
+		quoted[i] = strconv.Quote(t)
+	}
+	fmt.Fprintf(&g.b, "export const %s = [%s] as const;\n", n.prefix, strings.Join(quoted, ", "))
+
+	g.b.WriteString("\n")
+	fmt.Fprintf(&g.b, "/** Parameters of the %s event published as topics, after the prefix topics, in this order. */\n", commentText(e.Name))
+	g.writeParamObject(n.topics, topics)
+
+	g.b.WriteString("\n")
+	switch e.DataFormat {
+	case "map":
+		fmt.Fprintf(&g.b, "/** Data payload of the %s event: a map keyed by parameter name. */\n", commentText(e.Name))
+		g.writeParamObject(n.data, data)
+	case "vec":
+		fmt.Fprintf(&g.b, "/** Data payload of the %s event: a vector of the parameters, in this order. */\n", commentText(e.Name))
+		fmt.Fprintf(&g.b, "export type %s = %s;\n", n.data, g.paramTuple(data))
+	case "single-value":
+		fmt.Fprintf(&g.b, "/** Data payload of the %s event: a single value. */\n", commentText(e.Name))
+		switch len(data) {
+		case 0:
+			fmt.Fprintf(&g.b, "export type %s = void;\n", n.data)
+		case 1:
+			g.writeDoc("", data[0].Doc)
+			fmt.Fprintf(&g.b, "export type %s = %s;\n", n.data, g.tsType(data[0].Type))
+		default:
+			g.fail(fmt.Errorf("codegen: event %s has single-value data but %d data parameters", e.Name, len(data)))
+		}
+	default:
+		// A format this generator does not know: saying nothing about
+		// the payload is better than declaring a shape that is wrong.
+		fmt.Fprintf(&g.b, "/** Data payload of the %s event, in a format this generator does not know (%s). */\n",
+			commentText(e.Name), commentText(e.DataFormat))
+		fmt.Fprintf(&g.b, "export type %s = unknown;\n", n.data)
+	}
+
+	g.b.WriteString("\n")
+	doc := e.Doc
+	if strings.TrimSpace(doc) == "" {
+		doc = "The " + commentText(e.Name) + " event, as the SDK decodes it."
+	}
+	g.writeDoc("", doc)
+	fmt.Fprintf(&g.b, "export interface %s {\n", n.event)
+	fmt.Fprintf(&g.b, "  topics: %s;\n", n.topics)
+	fmt.Fprintf(&g.b, "  data: %s;\n", n.data)
+	g.b.WriteString("}\n")
+}
+
+// writeParamObject declares an object type with one property per
+// parameter. An empty one is Record<string, never>, which unlike an empty
+// interface accepts only an empty object.
+func (g *tsGen) writeParamObject(name string, params []model.EventParam) {
+	if len(params) == 0 {
+		fmt.Fprintf(&g.b, "export type %s = Record<string, never>;\n", name)
+		return
+	}
+	fmt.Fprintf(&g.b, "export interface %s {\n", name)
+	for _, p := range params {
+		g.writeDoc("  ", p.Doc)
+		fmt.Fprintf(&g.b, "  %s: %s;\n", propertyKey(p.Name), g.tsType(p.Type))
+	}
+	g.b.WriteString("}\n")
+}
+
+// paramTuple renders parameters as a readonly tuple. The elements are
+// labelled with the parameter names for editor hints, unless a name is not
+// a plain identifier: TypeScript requires every element or none labelled.
+func (g *tsGen) paramTuple(params []model.EventParam) string {
+	labelled := true
+	for _, p := range params {
+		if !identifier.MatchString(p.Name) || reservedTypeNames[p.Name] {
+			labelled = false
+		}
+	}
+	parts := make([]string, len(params))
+	for i, p := range params {
+		parts[i] = g.tsType(p.Type)
+		if labelled {
+			parts[i] = p.Name + ": " + parts[i]
+		}
+	}
+	return "readonly [" + strings.Join(parts, ", ") + "]"
 }
 
 func (g *tsGen) writeClient(fns []model.Function) {
@@ -614,6 +783,12 @@ func propertyKey(name string) string {
 		return name
 	}
 	return strconv.Quote(name)
+}
+
+// commentText keeps a value from breaking out of a /** */ comment: it
+// stays on one line, and a "*/" in it cannot end the comment early.
+func commentText(s string) string {
+	return strings.ReplaceAll(oneLine(s), "*/", "*\\/")
 }
 
 // oneLine keeps a header value from breaking out of its comment.

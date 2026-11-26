@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -65,6 +66,11 @@ type Config struct {
 	DatabaseMinConns int32
 	// HTTPAddr is the address the API and browse UI listen on.
 	HTTPAddr string
+	// MetricsAddr, when set, is a separate address serve exposes
+	// Prometheus metrics on at GET /metrics. Empty turns metrics off, so
+	// the registry's public port never leaks operational detail by
+	// accident.
+	MetricsAddr string
 	// TLSCertFile and TLSKeyFile, when both set, make `serve` terminate TLS.
 	// Setting only one is a configuration error: a listener cannot offer TLS
 	// without a certificate and its key.
@@ -236,6 +242,7 @@ var knownConfigKeys = map[string]bool{
 	"trust_x_forwarded_for":        true,
 	"read_only":                    true,
 	"api_tokens":                   true,
+	"metrics_addr":                 true,
 }
 
 // loadConfigFile parses a YAML config file into the flat map of
@@ -341,6 +348,7 @@ func LoadWith(configPath string) (*Config, error) {
 		NetworkPassphrase: envOr(src, "NETWORK_PASSPHRASE", DefaultNetworkPassphrase),
 		DatabaseURL:       databaseURL,
 		HTTPAddr:          envOr(src, "HTTP_ADDR", DefaultHTTPAddr),
+		MetricsAddr:       strings.TrimSpace(src.Getenv("METRICS_ADDR")),
 		PublicURL:         strings.TrimRight(strings.TrimSpace(src.Getenv("PUBLIC_URL")), "/"),
 		RPCTimeout:        DefaultRPCTimeout,
 	}
@@ -452,6 +460,9 @@ func LoadWith(configPath string) (*Config, error) {
 	if err := loadTLS(cfg, src); err != nil {
 		return nil, err
 	}
+	if err := checkMetricsAddr(cfg); err != nil {
+		return nil, err
+	}
 	if err := loadEvents(cfg, src); err != nil {
 		return nil, err
 	}
@@ -467,6 +478,22 @@ func LoadWith(configPath string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// checkMetricsAddr validates METRICS_ADDR. Sharing the API's address would
+// defeat the point of a separate listener — and fail to bind — so it is
+// refused at startup rather than when serve tries to listen.
+func checkMetricsAddr(cfg *Config) error {
+	if cfg.MetricsAddr == "" {
+		return nil
+	}
+	if _, _, err := net.SplitHostPort(cfg.MetricsAddr); err != nil {
+		return fmt.Errorf("config: METRICS_ADDR %q must be host:port, such as 127.0.0.1:9090: %w", cfg.MetricsAddr, err)
+	}
+	if cfg.MetricsAddr == cfg.HTTPAddr {
+		return errors.New("config: METRICS_ADDR must differ from HTTP_ADDR, so metrics stay off the public port")
+	}
+	return nil
 }
 
 // loadTLS reads the certificate and key pair. TLS is opt-in, but half a
