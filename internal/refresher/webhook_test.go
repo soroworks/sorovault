@@ -229,6 +229,48 @@ func TestNewWebhookRejectsABadURL(t *testing.T) {
 	}
 }
 
+// TestSignEdgeCases covers the boundaries the delivery tests do not: an
+// empty secret with an empty body, and secrets and bodies containing bytes
+// that must be hashed as they are rather than as text.
+func TestSignEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		secret string
+		body   []byte
+		want   string
+	}{
+		{
+			name: "empty secret and empty body",
+			want: "sha256=b613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad",
+		},
+		{
+			name:   "secret and body with NUL bytes",
+			secret: "\x00k",
+			body:   []byte("a\x00b"),
+			want:   "sha256=37e58756f3350b0720cd9fae266c3ed11bb2964e858baac8338f5914b042e053",
+		},
+		{
+			name:   "body of only whitespace is signed unchanged",
+			secret: "s",
+			body:   []byte("\n\r\t"),
+			want:   "sha256=4b8eee8e1a092f32f0b914cab89e5928e615ef5da942b092e56e56262ce17820",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := refresher.Sign(tt.secret, tt.body)
+			assert.Equal(t, tt.want, got)
+			assert.True(t, strings.HasPrefix(got, "sha256="))
+			assert.Len(t, got, len("sha256=")+64, "the value is the prefix plus a SHA-256 digest in hex")
+		})
+	}
+}
+
 // TestNewWebhookEdgeCases exercises boundary inputs: an http URL (not just
 // https), a URL with a scheme but no host, and a minimal URL with no path.
 func TestNewWebhookEdgeCases(t *testing.T) {
