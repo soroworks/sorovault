@@ -231,6 +231,62 @@ func TestInterfaceSymbolNames(t *testing.T) {
 	assert.Empty(t, (&model.Interface{}).SymbolNames())
 }
 
+// TestInterfaceSymbolNamesEdgeCases covers the boundaries the happy-path test
+// does not: no declarations at all, blank names, and one name declared in
+// several collections.
+func TestInterfaceSymbolNamesEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		iface *model.Interface
+		want  []string
+	}{
+		{
+			name:  "no declarations returns an empty non-nil list",
+			iface: &model.Interface{},
+			want:  []string{},
+		},
+		{
+			name: "blank names in every collection are skipped",
+			iface: &model.Interface{
+				Functions: []model.Function{{Name: ""}},
+				Types: model.Types{
+					Structs:    []model.Struct{{Name: ""}},
+					Unions:     []model.Union{{Name: ""}},
+					Enums:      []model.Enum{{Name: ""}},
+					ErrorEnums: []model.ErrorEnum{{Name: ""}},
+				},
+				Events: []model.Event{{Name: ""}},
+			},
+			want: []string{},
+		},
+		{
+			name: "a name declared in several collections is listed once, sorted",
+			iface: &model.Interface{
+				Functions: []model.Function{{Name: "b"}, {Name: "b"}},
+				Types: model.Types{
+					Structs: []model.Struct{{Name: "b"}},
+					Enums:   []model.Enum{{Name: "B"}},
+				},
+				Events: []model.Event{{Name: "a"}},
+			},
+			// Sort is bytewise, so an uppercase name precedes lowercase ones.
+			want: []string{"B", "a", "b"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := tt.iface.SymbolNames()
+			assert.NotNil(t, got, "callers iterate the result, so it is never nil")
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 // TestJSONShape pins the wire format, since the ABI JSON is the project's
 // public contract and other tools are expected to parse it.
 func TestJSONShape(t *testing.T) {
