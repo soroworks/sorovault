@@ -23,7 +23,7 @@ network in the database.
 ## 1. Check that the server is alive
 
 ```console
-$ curl -sS "$BASE/healthz"
+$ curl -fsS "$BASE/healthz"
 {"status":"ok","version":"1.2.3"}
 ```
 

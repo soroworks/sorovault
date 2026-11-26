@@ -164,3 +164,21 @@ func TestResultJSONRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPParamsJSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := mcp.Params{
+		Method:  mcp.MethodSearch,
+		ID:      42,
+		JSONRPC: "2.0",
+		Data:    json.RawMessage(`{"query":"soroban"}`),
+	}
+
+	data, err := json.Marshal(original)
+	require.NoError(t, err)
+
+	var decoded mcp.Params
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	require.Equal(t, original, decoded, "Params must survive a JSON round trip unchanged")
+}
