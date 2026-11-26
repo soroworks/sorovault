@@ -25,7 +25,7 @@ func setEnv(t *testing.T, vars map[string]string) {
 
 	for _, key := range []string{
 		"RPC_URL", "NETWORK_PASSPHRASE", "DATABASE_URL", "DATABASE_URL_FILE",
-		"HTTP_ADDR", "TLS_CERT_FILE", "TLS_KEY_FILE",
+		"HTTP_ADDR", "TLS_CERT_FILE", "TLS_KEY_FILE", "METRICS_ADDR",
 		"LOG_LEVEL", "LOG_FORMAT", "RPC_TIMEOUT", "REFRESH_INTERVAL",
 		"MAX_CONCURRENT_REGISTRATIONS", "REFRESH_WEBHOOK_URL",
 		"REFRESH_WEBHOOK_SECRET", "REFRESH_EVENTS", "REFRESH_EVENTS_INTERVAL",
@@ -67,6 +67,44 @@ func TestLoadDefaults(t *testing.T) {
 	assert.Equal(t, config.DefaultRateLimitPerMinute, cfg.RateLimitPerMinute)
 	assert.Equal(t, config.DefaultRateLimitBurst, cfg.RateLimitBurst)
 	assert.False(t, cfg.TrustXForwardedFor)
+	assert.Empty(t, cfg.MetricsAddr, "metrics are opt-in")
+}
+
+func TestLoadMetricsAddr(t *testing.T) {
+	tests := []struct {
+		name    string
+		vars    map[string]string
+		want    string
+		wantErr string
+	}{
+		{name: "unset is off", vars: map[string]string{}, want: ""},
+		{name: "a separate address", vars: map[string]string{"METRICS_ADDR": "127.0.0.1:9090"}, want: "127.0.0.1:9090"},
+		{name: "whitespace is trimmed", vars: map[string]string{"METRICS_ADDR": " :9090 "}, want: ":9090"},
+		{name: "not host:port", vars: map[string]string{"METRICS_ADDR": "9090"}, wantErr: "METRICS_ADDR \"9090\" must be host:port"},
+		{name: "the API's own address", vars: map[string]string{"METRICS_ADDR": ":8080"}, wantErr: "METRICS_ADDR must differ from HTTP_ADDR"},
+		{
+			name:    "the API's overridden address",
+			vars:    map[string]string{"HTTP_ADDR": ":7000", "METRICS_ADDR": ":7000"},
+			wantErr: "METRICS_ADDR must differ from HTTP_ADDR",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vars := map[string]string{"DATABASE_URL": testDatabaseURL}
+			for k, v := range tt.vars {
+				vars[k] = v
+			}
+			setEnv(t, vars)
+
+			cfg, err := config.Load()
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.MetricsAddr)
+		})
+	}
 }
 
 func TestLoadOverrides(t *testing.T) {
@@ -349,6 +387,41 @@ func TestDatabasePoolSize(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantMax, cfg.DatabaseMaxConns)
 			assert.Equal(t, tt.wantMin, cfg.DatabaseMinConns)
+		})
+	}
+}
+
+func TestDatabaseURLEdgeCases(t *testing.T) {
+
+	tests := []struct {
+		name    string
+		env     string
+		wantURL string
+		want    string
+	}{
+		{
+			name: "empty input",
+			env:  "",
+			want: "DATABASE_URL or DATABASE_URL_FILE is required",
+		},
+		{
+			name:    "valid postgres url",
+			env:     testDatabaseURL,
+			wantURL: testDatabaseURL,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setEnv(t, map[string]string{"DATABASE_URL": tt.env})
+			cfg, err := config.Load()
+			if tt.want != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.want)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantURL, cfg.DatabaseURL)
+			}
 		})
 	}
 }
@@ -652,6 +725,34 @@ func TestParseAPITokens(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("boundary length", func(t *testing.T) {
+		t.Parallel()
+
+		// exactly 16 characters: the minimum, must pass
+		tokens, err := config.ParseAPITokens("0123456789abcdef")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"0123456789abcdef"}, tokens)
+
+		// exactly 15 characters: one below the minimum, must fail
+		_, err = config.ParseAPITokens("0123456789abcde")
+		require.Error(t, err)
+	})
+
+	t.Run("tab inside token is rejected", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := config.ParseAPITokens("0123456789abcdef\tbbb")
+		require.Error(t, err)
+	})
+
+	t.Run("only commas produce empty list", func(t *testing.T) {
+		t.Parallel()
+
+		tokens, err := config.ParseAPITokens(",,,")
+		require.NoError(t, err)
+		assert.Empty(t, tokens)
+	})
 }
 
 func TestLoadAPITokens(t *testing.T) {
@@ -946,6 +1047,51 @@ func TestLoadSigning(t *testing.T) {
 			_, err := config.Load()
 			require.Error(t, err)
 			assert.NotContains(t, err.Error(), seed, "the key must not leak into an error")
+		})
+	}
+}
+
+func TestLoadEdgeCases(t *testing.T) {
+	tests := []struct {
+		name    string
+		vars    map[string]string
+		want    string
+		wantErr string
+	}{
+		{
+			name: "empty input (missing database url)",
+			vars: map[string]string{"DATABASE_URL": ""},
+			want: "DATABASE_URL",
+		},
+		{
+			name: "boundary values for rate limit per minute below lower bound",
+			vars: map[string]string{
+				"DATABASE_URL":          testDatabaseURL,
+				"RATE_LIMIT_PER_MINUTE": "0",
+			},
+			want: "RATE_LIMIT_PER_MINUTE",
+		},
+		{
+			name: "invalid input for rate limit per minute",
+			vars: map[string]string{
+				"DATABASE_URL":          testDatabaseURL,
+				"RATE_LIMIT_PER_MINUTE": "not-an-integer",
+			},
+			want: "RATE_LIMIT_PER_MINUTE",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setEnv(t, tt.vars)
+			cfg, err := config.Load()
+			if tt.want != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.want)
+				return
+			}
+			require.NoError(t, err)
+			assert.NotNil(t, cfg)
 		})
 	}
 }

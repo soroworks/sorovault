@@ -29,6 +29,7 @@ func newAddCmd() *cobra.Command {
 	var (
 		asJSON   bool
 		fromFile string
+		name     string
 	)
 
 	cmd := &cobra.Command{
@@ -39,10 +40,16 @@ embedded in it, and store the result.
 
 Adding a contract that is already registered is not an error: it re-checks
 the contract against the network and records a new interface version if the
-contract has been upgraded since it was last seen.`,
+contract has been upgraded since it was last seen.
+
+--name gives a single contract a display name, which the browse UI shows and
+search matches. Adding again without --name keeps the existing name.`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 && fromFile == "" {
 				return fmt.Errorf("at least one contract ID is required, or use --from-file")
+			}
+			if cmd.Flags().Changed("name") && (len(args) != 1 || fromFile != "") {
+				return fmt.Errorf("--name applies to a single contract; pass exactly one contract ID and no --from-file")
 			}
 			return nil
 		},
@@ -54,13 +61,23 @@ contract has been upgraded since it was last seen.`,
 			if len(contractIDs) == 0 {
 				return fmt.Errorf("no contract IDs found")
 			}
+			if cmd.Flags().Changed("name") {
+				normalized, err := registry.NormalizeName(name)
+				if err != nil {
+					return err
+				}
+				if normalized == "" {
+					return fmt.Errorf("--name must not be empty")
+				}
+				name = normalized
+			}
 
 			return withApp(cmd.Context(), func(ctx context.Context, a *app) error {
 				var failed int
 
 				for _, contractID := range contractIDs {
 					fetchCtx, cancel := a.fetchContext(ctx)
-					result, err := a.registry.Register(fetchCtx, contractID)
+					result, err := a.registry.RegisterNamed(fetchCtx, contractID, name)
 					cancel()
 
 					if err != nil {
@@ -88,6 +105,7 @@ contract has been upgraded since it was last seen.`,
 
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the full result as JSON")
 	cmd.Flags().StringVar(&fromFile, "from-file", "", "read contract IDs from a file (one per line; use - for stdin)")
+	cmd.Flags().StringVar(&name, "name", "", fmt.Sprintf("display name for the contract (single contract only; at most %d characters)", registry.MaxNameLength))
 	return cmd
 }
 
@@ -1279,6 +1297,9 @@ func printRegisterResult(w io.Writer, r *registry.Result) {
 	}
 
 	_, _ = fmt.Fprintf(w, "%s %s on %s\n", r.Contract.ContractID, verb, r.Contract.Network)
+	if r.Contract.Name != "" {
+		_, _ = fmt.Fprintf(w, "  name       %s\n", r.Contract.Name)
+	}
 	_, _ = fmt.Fprintf(w, "  wasm hash  %s\n", r.Contract.CurrentWasmHash)
 	printOrigin(w, r.Contract)
 

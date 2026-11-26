@@ -68,6 +68,15 @@ func newServeCmd() *cobra.Command {
 					a.log.Info("read-only mode: write endpoints refuse with 405; refreshes still run")
 				}
 
+				if a.cfg.MetricsAddr != "" && a.cfg.MetricsAddr == listenAddr {
+					return errors.New("serve: METRICS_ADDR must differ from the listen address, so metrics stay off the public port")
+				}
+				stopMetrics, err := startMetrics(ctx, a)
+				if err != nil {
+					return err
+				}
+				defer stopMetrics()
+
 				refresh, stopRefresh, err := startRefresher(ctx, a)
 				if err != nil {
 					return err
@@ -76,7 +85,11 @@ func newServeCmd() *cobra.Command {
 				// never left writing to a closed pool.
 				defer stopRefresh()
 
-				handler, err := newRouter(a.registry, a.log, refresh, a.cfg)
+				var observers []api.RequestObserver
+				if a.metrics != nil {
+					observers = append(observers, a.metrics)
+				}
+				handler, err := newRouterWith(a.registry, a.log, refresh, a.cfg, observers...)
 				if err != nil {
 					return err
 				}
@@ -111,6 +124,9 @@ func startRefresher(ctx context.Context, a *app) (r *refresher.Refresher, stop f
 		Timeout:  a.cfg.RPCTimeout,
 		Notifier: notifier,
 		Logger:   a.log.With("component", "refresher"),
+	}
+	if a.metrics != nil {
+		opts.Observer = a.metrics
 	}
 	if a.cfg.RefreshEvents {
 		follower, ok := a.fetcher.(stellar.UpdateFollower)
@@ -183,6 +199,12 @@ func newRouter(reg *registry.Registry, log *slog.Logger, refresh *refresher.Refr
 	if len(configs) > 0 {
 		cfg = configs[0]
 	}
+	return newRouterWith(reg, log, refresh, cfg)
+}
+
+// newRouterWith is newRouter with observers told about every request, which
+// is how serve feeds its HTTP metrics. cfg may be nil.
+func newRouterWith(reg *registry.Registry, log *slog.Logger, refresh *refresher.Refresher, cfg *config.Config, observers ...api.RequestObserver) (http.Handler, error) {
 
 	ui, err := web.NewServer(reg, log)
 	if err != nil {
@@ -229,7 +251,7 @@ func newRouter(reg *registry.Registry, log *slog.Logger, refresh *refresher.Refr
 			r.Use(middleware)
 		}
 	}
-	r.Use(api.Middleware(log)...)
+	r.Use(api.Middleware(log, observers...)...)
 
 	readiness := newReadinessProbe(reg.Store(), reg.CheckNetwork)
 	r.Get("/healthz", healthz)
