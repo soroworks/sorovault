@@ -229,3 +229,120 @@ func TestSetClockEdgeCases(t *testing.T) {
 		})
 	}
 }
+
+// TestMarkSubscriptionInactiveEdgeCases covers table-driven edge cases for MarkSubscriptionInactive:
+// empty input, invalid/non-existent secret, and already inactive subscription.
+func TestMarkSubscriptionInactiveEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		setup      func(ctx context.Context, m *Memory) string
+		secret     string
+		wantErr    error
+		wantActive bool
+	}{
+		{
+			name:    "empty secret returns ErrNotFound",
+			secret:  "",
+			wantErr: ErrNotFound,
+		},
+		{
+			name:    "non-existent secret returns ErrNotFound",
+			secret:  "non-existent-subscription-secret",
+			wantErr: ErrNotFound,
+		},
+		{
+			name: "already inactive subscription remains inactive",
+			setup: func(ctx context.Context, m *Memory) string {
+				sec, err := m.Subscribe(ctx, "testnet", []string{newerIDLow}, "https://example.com/webhook")
+				require.NoError(t, err)
+				err = m.MarkSubscriptionInactive(ctx, sec)
+				require.NoError(t, err)
+				return sec
+			},
+			wantErr:    nil,
+			wantActive: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			m := NewMemory()
+
+			secret := tt.secret
+			if tt.setup != nil {
+				secret = tt.setup(ctx, m)
+			}
+
+			err := m.MarkSubscriptionInactive(ctx, secret)
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+				sub, err := m.GetSubscription(ctx, secret)
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantActive, sub.Active)
+			}
+		})
+	}
+}
+
+// TestUnsubscribeEdgeCases covers table-driven edge cases for Unsubscribe:
+// empty input, invalid/non-existent secret, and already deleted subscription.
+func TestUnsubscribeEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		setup   func(ctx context.Context, m *Memory) string
+		secret  string
+		wantErr error
+	}{
+		{
+			name:    "empty secret returns ErrNotFound",
+			secret:  "",
+			wantErr: ErrNotFound,
+		},
+		{
+			name:    "non-existent secret returns ErrNotFound",
+			secret:  "non-existent-subscription-secret",
+			wantErr: ErrNotFound,
+		},
+		{
+			name: "already unsubscribed secret returns ErrNotFound",
+			setup: func(ctx context.Context, m *Memory) string {
+				sec, err := m.Subscribe(ctx, "testnet", []string{newerIDLow}, "https://example.com/webhook")
+				require.NoError(t, err)
+				err = m.Unsubscribe(ctx, sec)
+				require.NoError(t, err)
+				return sec
+			},
+			wantErr: ErrNotFound,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			m := NewMemory()
+
+			secret := tt.secret
+			if tt.setup != nil {
+				secret = tt.setup(ctx, m)
+			}
+
+			err := m.Unsubscribe(ctx, secret)
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}

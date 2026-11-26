@@ -950,6 +950,7 @@ func (b *responseBuffer) WriteHeader(status int) {
 	b.status = status
 }
 
+// Write records p in the buffered response body, setting the status to 200 if needed.
 func (b *responseBuffer) Write(p []byte) (int, error) {
 	if !b.wroteHeader {
 		b.WriteHeader(http.StatusOK)

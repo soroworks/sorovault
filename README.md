@@ -646,6 +646,22 @@ $ sorovault claim sign CDZZ…4PAN --name "ZK Vote" \
     https://registry.example/api/contracts/CDZZ…4PAN/verify
 ```
 
+The request body it prints carries the claim and the signature over it:
+
+```json
+{
+  "claim": {
+    "network": "testnet",
+    "contract_id": "CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN",
+    "name": "ZK Vote",
+    "source_url": "https://github.com/example/zkvote",
+    "issued_at": "2026-08-07T12:00:00Z"
+  },
+  "signature": "5N3k…bQ0=",
+  "signer": "GDUZ…7Q4K"
+}
+```
+
 `claim sign` signs locally and prints the request body; the seed is read from
 the environment (never a flag) and is never sent anywhere. The signed message is
 `sorovault-claim-v1\n` followed by the [canonical JSON](#signed-attestations) of
@@ -726,6 +742,18 @@ full `u32` range), so the two implementations cannot silently drift. Pin the
 public key from a channel you trust: verifying against a key fetched from the
 same mirror proves nothing.
 
+For example, verifying a response with the TypeScript implementation:
+
+```ts
+import { verifyResponse } from "./verify";
+
+// In production, pin these keys: keys fetched from the same mirror prove nothing.
+const { keys } = await (await fetch("https://registry.example/api/keys")).json();
+const res = await fetch("https://registry.example/api/contracts/CDZZ…4PAN");
+const body = await verifyResponse(res, keys);   // rejects unless the signature verifies
+console.log(body);
+```
+
 An attestation says a registry decoded *this interface from this WASM hash*; it
 does not say the WASM is safe or that the publisher is who they claim — that is
 what verification above is for.
@@ -745,6 +773,18 @@ refresh cannot find a contract, the registry records when it first noticed —
 }
 ```
 
+The listing carries the same timestamp, so a sweep over the registry can pick
+out what has gone:
+
+```console
+$ curl -s 'localhost:8080/api/contracts?q=zkvote' \
+    | jq '.contracts[] | {contract_id, missing_since}'
+{
+  "contract_id": "CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN",
+  "missing_since": "2026-08-07T12:00:00Z"
+}
+```
+
 The interface is still served — it is the best description of a contract that
 is no longer there — and the browse UI marks the contract as missing. A
 contract that comes back is marked live again, and the mark is cleared. A
@@ -758,6 +798,12 @@ so the number of registrations running at once is what keeps peak memory
 finite. `MAX_CONCURRENT_REGISTRATIONS` (default `4`) bounds it, across every
 client: the API, the CLI and the background refresher all draw on the same
 budget, because they all download modules.
+
+Raise the limit when the host has memory to spare, or lower it on a small one:
+
+```console
+$ MAX_CONCURRENT_REGISTRATIONS=8 sorovault serve
+```
 
 A request that cannot be given a slot waits a couple of seconds for one and
 is then refused with **503** and a `Retry-After` header, rather than queueing
@@ -1543,6 +1589,9 @@ Contributions welcome. Deliberately **not** built yet:
   and compile-in-CI test pattern.
 - **Resolving contract names.** The schema carries a `name`, but nothing
   populates it yet.
+- **Godoc examples.** `Render` in `internal/model/type.go` has tests but no
+  runnable example. Adding an `ExampleRender` function with a `// Output:`
+  comment to the package test file would show usage in godoc and run as a test.
 Explicitly out of scope: authentication, and any write operation against
 contracts themselves. SoroVault reads chain state; it never sends a transaction.
 

@@ -64,3 +64,34 @@ func TestGetVoteParams(t *testing.T) {
 		})
 	}
 }
+
+func TestHasVoted(t *testing.T) {
+	tests := []struct {
+		name       string
+		contractID string
+		wantErr    bool
+	}{
+		{
+			name:       "valid contract ID returns an operation",
+			contractID: ContractID,
+		},
+		{
+			name:       "invalid contract ID returns an error",
+			contractID: "not-a-valid-contract-id",
+			wantErr:    true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := NewClient(tt.contractID, Network)
+			op, err := client.HasVoted([32]byte{})
+			if tt.wantErr {
+				assert.Error(t, err)
+				assert.Nil(t, op)
+			} else {
+				require.NoError(t, err)
+				assert.NotNil(t, op)
+			}
+		})
+	}
+}
