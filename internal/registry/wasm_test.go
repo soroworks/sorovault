@@ -113,6 +113,57 @@ func TestWasmRejectsOversizedModule(t *testing.T) {
 	assert.Contains(t, err.Error(), "limit")
 }
 
+// TestWasmEdgeCases covers the boundaries of the download path: code exactly
+// at the size limit, an empty module, and a hash padded with whitespace.
+func TestWasmEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		module  []byte
+		mutate  func(hash string) string
+		wantErr error
+	}{
+		{
+			name:   "module exactly at the size limit is served",
+			module: make([]byte, wasm.MaxModuleSize),
+		},
+		{
+			name:   "empty module is served as empty bytes",
+			module: []byte{},
+		},
+		{
+			name:    "hash padded with whitespace is rejected before fetching",
+			module:  moduleWith(t, "padded"),
+			mutate:  func(hash string) string { return " " + hash + "\n" },
+			wantErr: registry.ErrInvalidWasmHash,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			reg, fake, _ := newRegistry(t)
+			hash := fake.UploadWasm(tt.module)
+			requested := hash
+			if tt.mutate != nil {
+				requested = tt.mutate(hash)
+			}
+
+			got, err := reg.Wasm(context.Background(), requested)
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				assert.Nil(t, got)
+				assert.Zero(t, fake.Calls["FetchWasm"], "a hash that cannot name a module must not be fetched")
+				return
+			}
+			require.NoError(t, err)
+			assert.Len(t, got, len(tt.module))
+		})
+	}
+}
+
 // TestWasmRejectsHashMismatch proves bytes are verified against the hash
 // before they are returned, so a corrupt or hostile RPC cannot substitute a
 // different module under an expected hash.
