@@ -66,8 +66,7 @@ func NewServer(reg *registry.Registry, log *slog.Logger) (*Server, error) {
 	return &Server{reg: reg, log: log, templates: tmpl}, nil
 }
 
-// Routes returns the UI's routes, to be mounted at the server root.
-// SetPublicURL enables absolute canonical links and the sitemap.
+// SetPublicURL sets the public base URL used for absolute canonical links and the sitemap.
 func (s *Server) SetPublicURL(base string) {
 	s.publicURL = strings.TrimRight(base, "/")
 }
@@ -88,6 +87,7 @@ func (s *Server) SetWriteAuthRequired(required bool) {
 	s.writeAuthRequired = required
 }
 
+// Routes returns the UI's routes, to be mounted at the server root.
 func (s *Server) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Use(securityHeaders)

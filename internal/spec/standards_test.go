@@ -40,3 +40,19 @@ func TestImplementedStandardsRequiresEveryFunction(t *testing.T) {
 	iface.Functions = iface.Functions[:len(iface.Functions)-1]
 	assert.Empty(t, spec.ImplementedStandards(iface))
 }
+
+func TestImplementedStandardsEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil interface", func(t *testing.T) {
+		assert.Empty(t, spec.ImplementedStandards(nil))
+	})
+
+	t.Run("empty interface", func(t *testing.T) {
+		emptyIface := &model.Interface{
+			ABIVersion: model.ABIVersion,
+			Functions:  []model.Function{},
+		}
+		assert.Empty(t, spec.ImplementedStandards(emptyIface))
+	})
+}

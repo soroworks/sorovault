@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -280,4 +281,130 @@ func TestCheckPassphrase(t *testing.T) {
 	err := registry.CheckPassphrase(stellar.NetworkPublic, stellar.NetworkTestnet)
 	require.ErrorIs(t, err, registry.ErrNetworkMismatch)
 	assert.Contains(t, err.Error(), stellar.NetworkPublic)
+}
+
+// TestCheckPassphraseEdgeCases pins the comparison at its boundaries: the
+// match is exact, so near-misses must be refused, and only an empty
+// expectation opts out of the guard.
+func TestCheckPassphraseEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		got      string
+		want     string
+		mismatch bool
+	}{
+		{"both empty", "", "", false},
+		{"empty expectation accepts anything", stellar.NetworkPublic, "", false},
+		{"matching passphrases", stellar.NetworkTestnet, stellar.NetworkTestnet, false},
+		{"empty report against an expectation", "", stellar.NetworkTestnet, true},
+		{"case differs", "test sdf network ; september 2015", stellar.NetworkTestnet, true},
+		{"trailing whitespace differs", stellar.NetworkTestnet + " ", stellar.NetworkTestnet, true},
+		{"whitespace-only expectation is not empty", stellar.NetworkTestnet, " ", true},
+		{"mismatch between public and testnet", stellar.NetworkPublic, stellar.NetworkTestnet, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := registry.CheckPassphrase(tt.got, tt.want)
+			if tt.mismatch {
+				require.ErrorIs(t, err, registry.ErrNetworkMismatch,
+					"the passphrase comparison must be exact")
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
+}
+
+// TestMaxConcurrentEdgeCases proves how New resolves the concurrency limit
+// at its edges: an unset or invalid limit falls back to the default, and
+// the smallest and very large valid limits are kept as given.
+func TestMaxConcurrentEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		limit int
+		want  int
+	}{
+		{name: "unset falls back to the default", limit: 0, want: registry.DefaultMaxConcurrent},
+		{name: "negative falls back to the default", limit: -1, want: registry.DefaultMaxConcurrent},
+		{name: "most negative int falls back to the default", limit: math.MinInt, want: registry.DefaultMaxConcurrent},
+		{name: "one is the smallest limit kept", limit: 1, want: 1},
+		{name: "a large limit is kept", limit: 1000, want: 1000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			reg := registry.New(stellartest.New(), spec.XDRDecoder{}, store.NewMemory(), registry.Options{
+				Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+				MaxConcurrent: tt.limit,
+			})
+			assert.Equal(t, tt.want, reg.MaxConcurrent())
+		})
+	}
+}
+
+// TestMaxConcurrentOfOneSerialises proves the boundary limit of one is
+// enforced, not merely reported: while one registration holds the only
+// slot, a second is refused with ErrBusy.
+func TestMaxConcurrentOfOneSerialises(t *testing.T) {
+	t.Parallel()
+
+	network := newBlockingNetwork(t)
+	network.Deploy(idA, moduleWith(t, "hello"))
+	reg := network.registry(t, 1)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = reg.Register(context.Background(), idA)
+	}()
+
+	select {
+	case <-network.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the registration to start")
+	}
+
+	_, err := reg.Register(context.Background(), idA)
+	require.ErrorIs(t, err, registry.ErrBusy)
+
+	network.releaseAll()
+	<-done
+	assert.EqualValues(t, 1, network.peak.Load())
+}
+
+// TestAcquireTimeoutEdgeCases mirrors TestMaxConcurrentEdgeCases for the
+// AcquireTimeout option: an unset or non-positive value falls back to the
+// default, and any positive value is kept as given.
+func TestAcquireTimeoutEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		timeout time.Duration
+		want    time.Duration
+	}{
+		{name: "unset falls back to the default", timeout: 0, want: registry.DefaultAcquireTimeout},
+		{name: "negative falls back to the default", timeout: -time.Second, want: registry.DefaultAcquireTimeout},
+		{name: "most negative duration falls back to the default", timeout: time.Duration(math.MinInt), want: registry.DefaultAcquireTimeout},
+		{name: "one nanosecond is the smallest timeout kept", timeout: time.Nanosecond, want: time.Nanosecond},
+		{name: "a large timeout is kept", timeout: 10 * time.Minute, want: 10 * time.Minute},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			reg := registry.New(stellartest.New(), spec.XDRDecoder{}, store.NewMemory(), registry.Options{
+				Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+				AcquireTimeout: tt.timeout,
+			})
+			assert.Equal(t, tt.want, reg.AcquireTimeout())
+		})
+	}
 }

@@ -465,6 +465,42 @@ func TestDecodeModuleWithoutSpecSection(t *testing.T) {
 	require.ErrorIs(t, err, spec.ErrNoSpecSection)
 }
 
+// TestDecodeEmptySpecSection checks that a module whose spec section is
+// present but contains no entries decodes to an empty interface without error.
+func TestDecodeEmptySpecSection(t *testing.T) {
+	t.Parallel()
+
+	module := wasmtest.Module(wasmtest.Section{
+		Name: wasm.SectionContractSpec,
+		Body: nil,
+	})
+
+	iface, err := spec.XDRDecoder{}.Decode(module)
+	require.NoError(t, err)
+	assert.Empty(t, iface.Functions, "an empty spec section yields no functions")
+	assert.Nil(t, iface.Meta)
+}
+
+// TestDecodeCorruptSpecSection checks that a module whose spec section
+// contains trailing garbage after a valid entry returns an error that is
+// distinct from ErrNoSpecSection.
+func TestDecodeCorruptSpecSection(t *testing.T) {
+	t.Parallel()
+
+	good := encodeEntries(t, functionEntry("ok", nil, nil))
+	corrupt := append(append([]byte{}, good...), 0xDE, 0xAD)
+
+	module := wasmtest.Module(wasmtest.Section{
+		Name: wasm.SectionContractSpec,
+		Body: corrupt,
+	})
+
+	_, err := spec.XDRDecoder{}.Decode(module)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, spec.ErrNoSpecSection,
+		"corrupt entries are a decode error, not a missing-section error")
+}
+
 func TestDecodeModuleMalformed(t *testing.T) {
 	t.Parallel()
 

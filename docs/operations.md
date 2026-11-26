@@ -112,6 +112,44 @@ changes only SoroVault's copy: it causes RPC traffic.
 SoroVault sets no cache headers. If the proxy caches, keep TTLs short: a
 refresh can change the interface served for the same contract ID.
 
+#### Example: TLS termination at the proxy (nginx)
+
+```nginx
+# TLS terminates at nginx; plain HTTP forwarded to sorovault on :8080
+server {
+    listen 443 ssl http2;
+    server_name vault.example.com;
+
+    ssl_certificate     /etc/ssl/certs/vault.example.com.crt;
+    ssl_certificate_key /etc/ssl/private/vault.example.com.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    # Preserve Origin and Referer for the browse UI registration form
+    proxy_set_header Origin        $http_origin;
+    proxy_set_header Referer       $http_referer;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+    # Allow 60s registration timeout; proxy read timeout must exceed it
+    proxy_read_timeout  70s;
+    proxy_send_timeout  70s;
+
+    location / {
+        proxy_pass http://sorovault:8080;
+    }
+}
+```
+
+#### Example: TLS termination in SoroVault (systemd drop-in)
+
+```ini
+# /etc/systemd/system/sorovault.service.d/tls.conf
+[Service]
+Environment=TLS_CERT_FILE=/etc/sorovault/tls.crt
+Environment=TLS_KEY_FILE=/etc/sorovault/tls.key
+Environment=HTTP_ADDR=0.0.0.0:8080
+```
+
 ### PostgreSQL connections
 
 `DATABASE_URL` is the connection string. If your platform mounts secrets as
@@ -257,6 +295,46 @@ reports this explicitly, with the version at which it stopped. Do not start the
 new version and do not re-run blindly: repair the schema or restore the backup,
 then bring the service up. The migrator deliberately does not expose a force
 command.
+
+### Search indexes and pg_trgm
+
+Migration 19 installs the `pg_trgm` extension and adds GIN trigram indexes
+for search (`?q=`). Without them, every search reads the `contracts` and
+`specs` tables in full, which is fine for a few thousand contracts but slow
+for hundreds of thousands.
+
+The indexes are optional. On PostgreSQL 13 and later `pg_trgm` is a trusted
+extension, so a role with `CREATE` on the database can install it. If the
+migration role lacks that privilege, or the server does not ship the contrib
+extensions, the migration does not fail. It logs a NOTICE, skips the indexes
+and still reaches the latest version. Search returns the same results without
+them, only more slowly.
+
+To add the indexes later, have a role that may do so install the extension,
+then create the indexes as the table owner:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX IF NOT EXISTS contracts_contract_id_trgm ON contracts USING gin (contract_id gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS contracts_name_trgm ON contracts USING gin (name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS specs_symbols_trgm ON specs USING gin (symbols gin_trgm_ops);
+```
+
+If the extension lives in a schema outside `search_path` (some providers use
+`extensions`), qualify the operator class, for example
+`extensions.gin_trgm_ops`. On a large, busy table, use
+`CREATE INDEX CONCURRENTLY` (outside a transaction) so writes are not blocked
+while it builds. The migration cannot do that itself, because migrations run
+inside a transaction.
+
+The migration builds the indexes with a plain `CREATE INDEX`, which blocks
+writes to the table while it runs. That takes seconds for a typical registry,
+but on a very large one you may prefer to create the indexes concurrently, as
+above, before upgrading. The migration skips any that already exist, so if a
+concurrent build failed, drop the INVALID index it left behind first.
+
+Queries of one or two characters cannot be narrowed by trigrams. They still
+return correct results, just at about the speed they had before the indexes.
 
 Rolling back the binary is only safe if the schema is compatible with it.
 The migrations currently shipped are additive, but do not assume that for a

@@ -101,6 +101,7 @@ func effectiveRows(cfg *config.Config) []effectiveRow {
 		{"DATABASE_MAX_CONNS", optionalNumber(cfg.DatabaseMaxConns, "pgx default")},
 		{"DATABASE_MIN_CONNS", optionalNumber(cfg.DatabaseMinConns, "pgx default")},
 		{"HTTP_ADDR", cfg.HTTPAddr},
+		{"METRICS_ADDR", cfg.MetricsAddr},
 		{"PUBLIC_URL", cfg.PublicURL},
 		{"LOG_LEVEL", strings.ToLower(cfg.LogLevel.String())},
 		{"LOG_FORMAT", cfg.LogFormat},
