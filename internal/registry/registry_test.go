@@ -377,6 +377,36 @@ func TestRefreshKeepsStoredSpecWhenUpgradeFailsToDecode(t *testing.T) {
 	assert.Equal(t, "v1", current.Interface.Functions[0].Name)
 }
 
+func TestCheckNetwork(t *testing.T) {
+	t.Parallel()
+
+	t.Run("happy path matches expected passphrase", func(t *testing.T) {
+		t.Parallel()
+
+		fake := stellartest.New()
+		reg := registry.New(fake, spec.XDRDecoder{}, store.NewMemory(), registry.Options{
+			ExpectPassphrase: stellar.NetworkTestnet,
+			Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		})
+
+		err := reg.CheckNetwork(context.Background())
+		require.NoError(t, err)
+	})
+
+	t.Run("error path on network mismatch", func(t *testing.T) {
+		t.Parallel()
+
+		fake := stellartest.New()
+		reg := registry.New(fake, spec.XDRDecoder{}, store.NewMemory(), registry.Options{
+			ExpectPassphrase: "Public Global Stellar Network ; September 2015",
+			Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		})
+
+		err := reg.CheckNetwork(context.Background())
+		require.ErrorIs(t, err, registry.ErrNetworkMismatch)
+	})
+}
+
 func TestNetworkMismatchIsRefused(t *testing.T) {
 	t.Parallel()
 
