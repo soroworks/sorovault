@@ -51,6 +51,12 @@ Contracts and their decoded interfaces are stored using a canonical JSON represe
                                internal/model   PostgreSQL / memory
 ```
 
+For example, registering a contract via the command line:
+
+```console
+$ go run ./cmd/sorovault add CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN
+```
+
 `internal/codegen` reads a stored `model.Interface` and produces a TypeScript
 client, a JSON Schema, or Markdown; it never talks to RPC. `internal/refresher`
 drives `registry.Refresh` on a schedule and is wired in by `serve`.

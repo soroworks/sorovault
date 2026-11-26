@@ -167,6 +167,49 @@ func TestGoDeclaresContractTypes(t *testing.T) {
 	assert.Regexp(t, `StatusClosed\s+Status = 1`, got)
 }
 
+// TestNewClient covers NewClient generation and invocation methods for the Go client.
+func TestNewClient(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		contractID string
+		network    string
+		wantError  bool
+	}{
+		{
+			name:       "happy path valid contract id",
+			contractID: "CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN",
+			network:    "testnet",
+			wantError:  false,
+		},
+		{
+			name:       "error path invalid contract id",
+			contractID: "INVALID_CONTRACT_ID",
+			network:    "testnet",
+			wantError:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			iface := &model.Interface{
+				Functions: []model.Function{
+					{Name: "ping"},
+				},
+			}
+			got, err := codegen.Go(iface, src, "zkvote")
+			require.NoError(t, err)
+
+			assert.Contains(t, got, "func NewClient(contractID, network string) *Client")
+			assert.Contains(t, got, "func (client *Client) Ping()")
+		})
+	}
+}
+
 // TestGoNoArgFunction covers functions that take no inputs, such as
 // get_total_votes.  The generated method must call invoke with only the
 // function name and produce no argument-encoding loop.

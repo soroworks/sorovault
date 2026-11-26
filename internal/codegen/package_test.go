@@ -37,6 +37,12 @@ func TestPackageVersion(t *testing.T) {
 		{"C618DAE26486", "0.0.0-c618dae26486"},
 		{"", "0.0.0"},
 		{"   ", "0.0.0"},
+		{"---", "0.0.0"},
+		{"abcdefghijkl", "0.0.0-abcdefghijkl"},
+		{"abcdefghijklm", "0.0.0-abcdefghijkl"},
+		{"ABCDEFGHIJKLMN", "0.0.0-abcdefghijkl"},
+		{"0123456789012345", "0.0.0-012345678901"},
+		{"!@#$%^&*()", "0.0.0"},
 		{"---!?@#", "0.0.0"},
 		{"abc123xyz789extras", "0.0.0-abc123xyz789"},
 	}

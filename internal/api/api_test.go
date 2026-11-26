@@ -1672,3 +1672,47 @@ func TestListContractsFiltersByImplementedStandard(t *testing.T) {
 	assert.Equal(t, idA, body.Contracts[0].ContractID)
 	assert.Equal(t, []string{"sep41"}, body.Contracts[0].Implements)
 }
+
+// TestNewServerEdgeCases covers the documented edge cases of NewServer:
+// a nil logger must be replaced with slog.Default() without panicking, and
+// the resulting server must be fully functional (Routes returns a handler,
+// the setter methods are callable without panicking).
+func TestNewServerEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	reg := registry.New(stellartest.New(), spec.XDRDecoder{}, store.NewMemory(), registry.Options{Logger: log})
+
+	tests := []struct {
+		name string
+		reg  *registry.Registry
+		log  *slog.Logger
+	}{
+		{
+			name: "nil logger falls back to slog.Default",
+			reg:  reg,
+			log:  nil,
+		},
+		{
+			name: "explicit logger is accepted as-is",
+			reg:  reg,
+			log:  log,
+		},
+		{
+			name: "nil logger with SetReadOnly and SetAPITokens are callable",
+			reg:  reg,
+			log:  nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s := api.NewServer(tt.reg, tt.log)
+			require.NotNil(t, s, "NewServer must return a non-nil server")
+			require.NotNil(t, s.Routes(), "Routes must return a non-nil handler")
+			s.SetReadOnly(false)
+			s.SetAPITokens(nil)
+		})
+	}
+}

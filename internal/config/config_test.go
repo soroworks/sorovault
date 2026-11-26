@@ -391,6 +391,41 @@ func TestDatabasePoolSize(t *testing.T) {
 	}
 }
 
+func TestDatabaseURLEdgeCases(t *testing.T) {
+
+	tests := []struct {
+		name    string
+		env     string
+		wantURL string
+		want    string
+	}{
+		{
+			name: "empty input",
+			env:  "",
+			want: "DATABASE_URL or DATABASE_URL_FILE is required",
+		},
+		{
+			name:    "valid postgres url",
+			env:     testDatabaseURL,
+			wantURL: testDatabaseURL,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setEnv(t, map[string]string{"DATABASE_URL": tt.env})
+			cfg, err := config.Load()
+			if tt.want != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.want)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantURL, cfg.DatabaseURL)
+			}
+		})
+	}
+}
+
 func TestLoadRequiresDatabaseURL(t *testing.T) {
 	setEnv(t, nil)
 
@@ -1012,6 +1047,51 @@ func TestLoadSigning(t *testing.T) {
 			_, err := config.Load()
 			require.Error(t, err)
 			assert.NotContains(t, err.Error(), seed, "the key must not leak into an error")
+		})
+	}
+}
+
+func TestLoadEdgeCases(t *testing.T) {
+	tests := []struct {
+		name    string
+		vars    map[string]string
+		want    string
+		wantErr string
+	}{
+		{
+			name: "empty input (missing database url)",
+			vars: map[string]string{"DATABASE_URL": ""},
+			want: "DATABASE_URL",
+		},
+		{
+			name: "boundary values for rate limit per minute below lower bound",
+			vars: map[string]string{
+				"DATABASE_URL":          testDatabaseURL,
+				"RATE_LIMIT_PER_MINUTE": "0",
+			},
+			want: "RATE_LIMIT_PER_MINUTE",
+		},
+		{
+			name: "invalid input for rate limit per minute",
+			vars: map[string]string{
+				"DATABASE_URL":          testDatabaseURL,
+				"RATE_LIMIT_PER_MINUTE": "not-an-integer",
+			},
+			want: "RATE_LIMIT_PER_MINUTE",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setEnv(t, tt.vars)
+			cfg, err := config.Load()
+			if tt.want != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.want)
+				return
+			}
+			require.NoError(t, err)
+			assert.NotNil(t, cfg)
 		})
 	}
 }

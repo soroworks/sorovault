@@ -273,9 +273,22 @@ $ go run ./cmd/sorovault add CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226X
 $ go run ./cmd/sorovault serve
 ```
 
+Check that the server is answering before going further:
+
+```console
+$ curl -s localhost:8080/healthz | jq .status
+"ok"
+```
+
 ## Configuration
 
-All configuration is environment variables. Only `DATABASE_URL` (or the path in `DATABASE_URL_FILE`, read from the filesystem) is required.
+All configuration is environment variables. Only `DATABASE_URL` (or the path in `DATABASE_URL_FILE`, read from the filesystem) is required. For example:
+
+```console
+$ export DATABASE_URL='postgres://sorovault@localhost:5432/sorovault?sslmode=disable'
+$ sorovault config show --json | jq .DATABASE_URL
+"postgres://sorovault@localhost:5432/sorovault?sslmode=disable"
+```
 
 ### A YAML file as the base layer
 
@@ -299,6 +312,12 @@ read_only: true
 cors_origins: "https://dashboard.example.com"
 ```
 
+Then start the server with that file:
+
+```console
+$ sorovault --config sorovault.yaml serve
+```
+
 Run `sorovault config show` to print the effective configuration — file,
 environment and defaults merged — with the secrets redacted: the
 connection string keeps its host and loses its password, tokens report
@@ -311,8 +330,8 @@ back out of what it became. `--json` prints the same rows for scripts.
 | `MAX_CONCURRENT_REGISTRATIONS` | `4` | how many registrations and refreshes run at once |
 | `DATABASE_MAX_CONNS` | pgx's own (the greater of 4 or the CPU count) | most connections the pool holds open |
 | `DATABASE_MIN_CONNS` | `0` | connections the pool keeps open between requests |
-| `RPC_URL` | `https://soroban-testnet.stellar.org` | Stellar RPC endpoint |
-| `NETWORK_PASSPHRASE` | `Test SDF Network ; September 2015` | the network you expect `RPC_URL` to serve |
+| `RPC_URL` | `https://soroban-testnet.stellar.org` | Stellar RPC endpoint contract code and upgrade events are read from (must be non-empty; e.g. `https://rpc-futurenet.stellar.org` for futurenet) |
+| `NETWORK_PASSPHRASE` | `Test SDF Network ; September 2015` | the network you expect `RPC_URL` to serve (e.g. `Public Global Stellar Network ; September 2015` for mainnet) |
 | `HTTP_ADDR` | `:8080` | listen address |
 | `METRICS_ADDR` | — (off) | separate `host:port` serving Prometheus metrics at `GET /metrics`; must differ from `HTTP_ADDR`. See [Metrics](#metrics) |
 | `TLS_CERT_FILE` | — | PEM certificate path; set with `TLS_KEY_FILE` to serve HTTPS (`--tls-cert` overrides) |
@@ -335,9 +354,19 @@ back out of what it became. `--json` prints the same rows for scripts.
 | `API_TOKENS` | — | comma-separated bearer tokens the write endpoints accept; unset keeps writes public |
 | `CONFIG_PATH` | — | YAML config file whose values sit under the environment (`--config` names it explicitly) |
 
-`NETWORK_PASSPHRASE` is a guard, not a source of truth. SoroVault reads the real
-passphrase from the RPC endpoint and refuses to proceed if the two disagree, so
-a stale `RPC_URL` cannot quietly file mainnet contracts under `testnet`.
+`RPC_URL` sets the Stellar RPC endpoint that SoroVault reads contract code,
+network passphrases, and upgrade events from (default:
+`https://soroban-testnet.stellar.org`). It must be non-empty at startup. For
+example, set `RPC_URL=https://rpc-futurenet.stellar.org` for futurenet or point
+it at a dedicated mainnet RPC provider (and update `NETWORK_PASSPHRASE` to
+match).
+
+`NETWORK_PASSPHRASE` is a guard, not a source of truth (default:
+`Test SDF Network ; September 2015`). SoroVault reads the real passphrase from
+the `RPC_URL` endpoint and refuses to proceed if the two disagree, so a stale
+`RPC_URL` cannot quietly file mainnet contracts under `testnet`. For example,
+set `NETWORK_PASSPHRASE="Public Global Stellar Network ; September 2015"` for
+mainnet (`public`) or `"Test SDF Future Network ; October 2022"` for futurenet.
 
 ### Automatic refresh
 
@@ -357,6 +386,21 @@ A contract that fails to refresh — expired, or an RPC error — is logged and
 skipped, and the sweep carries on. One sweep runs at startup and then one per
 interval; a sweep in progress at shutdown is cancelled before the database is
 closed.
+
+For example, to re-check every registered contract every six hours:
+
+```console
+$ REFRESH_INTERVAL=6h sorovault serve
+```
+
+To also receive webhook notifications when a contract is upgraded:
+
+```console
+$ REFRESH_INTERVAL=6h \
+  REFRESH_WEBHOOK_URL=https://hooks.example.com/sorovault \
+  REFRESH_WEBHOOK_SECRET=my-secret-key \
+  sorovault serve
+```
 
 ### Metrics
 
@@ -586,6 +630,22 @@ $ sorovault claim sign CDZZ…4PAN --name "ZK Vote" \
     https://registry.example/api/contracts/CDZZ…4PAN/verify
 ```
 
+The request body it prints carries the claim and the signature over it:
+
+```json
+{
+  "claim": {
+    "network": "testnet",
+    "contract_id": "CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN",
+    "name": "ZK Vote",
+    "source_url": "https://github.com/example/zkvote",
+    "issued_at": "2026-08-07T12:00:00Z"
+  },
+  "signature": "5N3k…bQ0=",
+  "signer": "GDUZ…7Q4K"
+}
+```
+
 `claim sign` signs locally and prints the request body; the seed is read from
 the environment (never a flag) and is never sent anywhere. The signed message is
 `sorovault-claim-v1\n` followed by the [canonical JSON](#signed-attestations) of
@@ -666,6 +726,18 @@ full `u32` range), so the two implementations cannot silently drift. Pin the
 public key from a channel you trust: verifying against a key fetched from the
 same mirror proves nothing.
 
+For example, verifying a response with the TypeScript implementation:
+
+```ts
+import { verifyResponse } from "./verify";
+
+// In production, pin these keys: keys fetched from the same mirror prove nothing.
+const { keys } = await (await fetch("https://registry.example/api/keys")).json();
+const res = await fetch("https://registry.example/api/contracts/CDZZ…4PAN");
+const body = await verifyResponse(res, keys);   // rejects unless the signature verifies
+console.log(body);
+```
+
 An attestation says a registry decoded *this interface from this WASM hash*; it
 does not say the WASM is safe or that the publisher is who they claim — that is
 what verification above is for.
@@ -685,6 +757,18 @@ refresh cannot find a contract, the registry records when it first noticed —
 }
 ```
 
+The listing carries the same timestamp, so a sweep over the registry can pick
+out what has gone:
+
+```console
+$ curl -s 'localhost:8080/api/contracts?q=zkvote' \
+    | jq '.contracts[] | {contract_id, missing_since}'
+{
+  "contract_id": "CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN",
+  "missing_since": "2026-08-07T12:00:00Z"
+}
+```
+
 The interface is still served — it is the best description of a contract that
 is no longer there — and the browse UI marks the contract as missing. A
 contract that comes back is marked live again, and the mark is cleared. A
@@ -698,6 +782,12 @@ so the number of registrations running at once is what keeps peak memory
 finite. `MAX_CONCURRENT_REGISTRATIONS` (default `4`) bounds it, across every
 client: the API, the CLI and the background refresher all draw on the same
 budget, because they all download modules.
+
+Raise the limit when the host has memory to spare, or lower it on a small one:
+
+```console
+$ MAX_CONCURRENT_REGISTRATIONS=8 sorovault serve
+```
 
 A request that cannot be given a slot waits a couple of seconds for one and
 is then refused with **503** and a `Retry-After` header, rather than queueing
@@ -1483,6 +1573,9 @@ Contributions welcome. Deliberately **not** built yet:
   and compile-in-CI test pattern.
 - **Resolving contract names.** The schema carries a `name`, but nothing
   populates it yet.
+- **Godoc examples.** `Render` in `internal/model/type.go` has tests but no
+  runnable example. Adding an `ExampleRender` function with a `// Output:`
+  comment to the package test file would show usage in godoc and run as a test.
 Explicitly out of scope: authentication, and any write operation against
 contracts themselves. SoroVault reads chain state; it never sends a transaction.
 
