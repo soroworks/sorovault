@@ -152,6 +152,64 @@ func TestCatalogWasmRejectsOversizedModules(t *testing.T) {
 	}
 }
 
+// TestCatalogWasmDecodeEdgeCases covers boundary modules the happy path does
+// not: a spec section with no declarations, no module bytes at all, and a
+// spec section whose XDR stream is truncated.
+func TestCatalogWasmDecodeEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		module  []byte
+		wantErr bool
+	}{
+		{
+			name:   "empty spec section catalogues an interface with no declarations",
+			module: wasmtest.Module(wasmtest.Section{Name: wasm.SectionContractSpec}),
+		},
+		{
+			name:    "empty module is rejected",
+			module:  []byte{},
+			wantErr: true,
+		},
+		{
+			name:    "truncated spec entry is rejected",
+			module:  wasmtest.Module(wasmtest.Section{Name: wasm.SectionContractSpec, Body: []byte{0xde}}),
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			reg, fake, db := newRegistry(t)
+			hash := fake.UploadWasm(tt.module)
+
+			result, err := reg.CatalogWasm(context.Background(), hash)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Nil(t, result)
+				assert.NotErrorIs(t, err, spec.ErrNoSpecSection,
+					"the section is present, so this is a decode failure, not a missing spec")
+				_, err = db.GetWasmSpec(context.Background(), "testnet", hash)
+				assert.ErrorIs(t, err, store.ErrNotFound, "an undecodable module must not be catalogued")
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			assert.True(t, result.Created)
+			assert.Empty(t, result.Interface.Functions)
+			assert.Empty(t, result.Interface.SymbolNames())
+
+			stored, err := db.GetWasmSpec(context.Background(), "testnet", hash)
+			require.NoError(t, err)
+			assert.Empty(t, stored.Interface.SymbolNames())
+		})
+	}
+}
+
 // TestCatalogWasmRejectsHashMismatch proves the bytes fetched for a hash are
 // verified before they are decoded and stored.
 func TestCatalogWasmRejectsHashMismatch(t *testing.T) {

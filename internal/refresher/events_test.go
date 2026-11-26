@@ -252,6 +252,102 @@ func TestPollEventsWithoutASource(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// failingFollower fails every ExecutableUpdates call while failing is set,
+// guarded by a mutex so a test can flip it while FollowEvents is running.
+type failingFollower struct {
+	stellar.UpdateFollower
+	mu      sync.Mutex
+	failing bool
+	calls   int
+}
+
+func (f *failingFollower) ExecutableUpdates(ctx context.Context, from stellar.UpdatePosition, limit int) (*stellar.UpdatePage, error) {
+	f.mu.Lock()
+	f.calls++
+	failing := f.failing
+	f.mu.Unlock()
+	if failing {
+		return nil, errors.New("rpc down")
+	}
+	return f.UpdateFollower.ExecutableUpdates(ctx, from, limit)
+}
+
+func (f *failingFollower) setFailing(v bool) {
+	f.mu.Lock()
+	f.failing = v
+	f.calls = 0
+	f.mu.Unlock()
+}
+
+func (f *failingFollower) failedCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+func TestFollowEvents(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		// failFirst makes the event source fail for a few ticks after the
+		// position is established, before the upgrade can be read.
+		failFirst bool
+	}{
+		{name: "happy path refreshes an upgraded contract", failFirst: false},
+		{name: "keeps following after the source fails", failFirst: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			notifier := &recordingNotifier{}
+			follower := &failingFollower{UpdateFollower: f.fake}
+			r := f.eventRefresherWith(t, notifier, follower)
+
+			id := contractID(t, 1)
+			f.register(t, id, "v1")
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan struct{})
+			go func() {
+				r.FollowEvents(ctx)
+				close(done)
+			}()
+
+			require.Eventually(t, func() bool {
+				_, err := f.db.GetState(context.Background(), "refresher.events.testnet")
+				return err == nil
+			}, 5*time.Second, 5*time.Millisecond, "the follower establishes its position")
+
+			if tt.failFirst {
+				follower.setFailing(true)
+			}
+			f.fake.Upgrade(id, moduleWith(t, "v2"))
+
+			if tt.failFirst {
+				require.Eventually(t, func() bool { return follower.failedCalls() >= 3 },
+					5*time.Second, 5*time.Millisecond, "the loop keeps polling through failures")
+				assert.Empty(t, notifier.seen(), "nothing is refreshed while the source fails")
+				follower.setFailing(false)
+			}
+
+			require.Eventually(t, func() bool { return len(notifier.seen()) == 1 },
+				5*time.Second, 5*time.Millisecond, "the upgrade is picked up by the follower")
+			assert.Equal(t, id, notifier.seen()[0].ContractID)
+
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("FollowEvents did not return after the context was cancelled")
+			}
+		})
+	}
+}
+
 func TestRunFollowsEventsAlongsidePolling(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)

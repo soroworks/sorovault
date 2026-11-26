@@ -231,6 +231,62 @@ func TestInterfaceSymbolNames(t *testing.T) {
 	assert.Empty(t, (&model.Interface{}).SymbolNames())
 }
 
+// TestInterfaceSymbolNamesEdgeCases covers the boundaries the happy-path test
+// does not: no declarations at all, blank names, and one name declared in
+// several collections.
+func TestInterfaceSymbolNamesEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		iface *model.Interface
+		want  []string
+	}{
+		{
+			name:  "no declarations returns an empty non-nil list",
+			iface: &model.Interface{},
+			want:  []string{},
+		},
+		{
+			name: "blank names in every collection are skipped",
+			iface: &model.Interface{
+				Functions: []model.Function{{Name: ""}},
+				Types: model.Types{
+					Structs:    []model.Struct{{Name: ""}},
+					Unions:     []model.Union{{Name: ""}},
+					Enums:      []model.Enum{{Name: ""}},
+					ErrorEnums: []model.ErrorEnum{{Name: ""}},
+				},
+				Events: []model.Event{{Name: ""}},
+			},
+			want: []string{},
+		},
+		{
+			name: "a name declared in several collections is listed once, sorted",
+			iface: &model.Interface{
+				Functions: []model.Function{{Name: "b"}, {Name: "b"}},
+				Types: model.Types{
+					Structs: []model.Struct{{Name: "b"}},
+					Enums:   []model.Enum{{Name: "B"}},
+				},
+				Events: []model.Event{{Name: "a"}},
+			},
+			// Sort is bytewise, so an uppercase name precedes lowercase ones.
+			want: []string{"B", "a", "b"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := tt.iface.SymbolNames()
+			assert.NotNil(t, got, "callers iterate the result, so it is never nil")
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 // TestJSONShape pins the wire format, since the ABI JSON is the project's
 // public contract and other tools are expected to parse it.
 func TestJSONShape(t *testing.T) {
@@ -315,6 +371,63 @@ func TestEnvMetaJSONShape(t *testing.T) {
 	assert.Equal(t, "25", got["interface_version"])
 	assert.Equal(t, float64(25), got["protocol"])
 	assert.NotContains(t, got, "pre_release", "a zero pre-release number must be omitted")
+}
+
+// TestEnvMetaJSONRoundTrip checks that the environment metadata survives a
+// JSON round trip unchanged, so the ABI consumers decode is what was encoded.
+func TestEnvMetaJSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := model.NewEnvMeta(25, 4)
+
+	data, err := json.Marshal(original)
+	require.NoError(t, err)
+
+	var decoded model.EnvMeta
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	require.Equal(t, original, decoded, "EnvMeta must survive a JSON round trip unchanged")
+}
+
+// TestEnumCaseJSONRoundTrip checks that an enum case survives a JSON round
+// trip unchanged.
+func TestEnumCaseJSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := model.EnumCase{
+		Name:  "Active",
+		Doc:   "The contract is active.",
+		Value: 7,
+	}
+
+	data, err := json.Marshal(original)
+	require.NoError(t, err)
+
+	var decoded model.EnumCase
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	require.Equal(t, original, decoded, "EnumCase must survive a JSON round trip unchanged")
+}
+
+// TestEnumJSONRoundTrip checks that an enum, including its cases, survives a
+// JSON round trip unchanged.
+func TestEnumJSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := model.Enum{
+		Name: "Status",
+		Doc:  "The status of a listing.",
+		Lib:  "contracts/listing",
+		Cases: []model.EnumCase{
+			{Name: "Active", Doc: "The listing is active.", Value: 1},
+			{Name: "Sold", Value: 2},
+		},
+	}
+
+	data, err := json.Marshal(original)
+	require.NoError(t, err)
+
+	var decoded model.Enum
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	require.Equal(t, original, decoded, "Enum must survive a JSON round trip unchanged")
 }
 
 func TestStellarAssetContractInterface(t *testing.T) {

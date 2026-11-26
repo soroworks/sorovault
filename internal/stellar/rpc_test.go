@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stellar/go-stellar-sdk/strkey"
@@ -353,6 +354,43 @@ func TestFetchRejectsOversizedCode(t *testing.T) {
 
 	_, err = f.FetchWasm(context.Background(), hex.EncodeToString(wasmHash[:]))
 	require.ErrorIs(t, err, wasm.ErrModuleTooLarge)
+}
+
+// TestFetchWasmRejectsMalformedHash covers the inputs rejected before any
+// round trip: an empty hash, invalid hex and lengths either side of the 32
+// bytes a SHA-256 digest occupies.
+func TestFetchWasmRejectsMalformedHash(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		wasmHash string
+	}{
+		{"empty input", ""},
+		{"non-hex characters", strings.Repeat("zz", 32)},
+		{"one byte short of a digest", strings.Repeat("ab", 31)},
+		{"one byte over a digest", strings.Repeat("ab", 33)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fake := newFakeRPC(t)
+			srv := fake.start()
+
+			f := stellar.NewRPCFetcher(srv.URL, srv.Client())
+			t.Cleanup(func() { _ = f.Close() })
+
+			code, err := f.FetchWasm(context.Background(), tt.wasmHash)
+			require.Error(t, err)
+			assert.Nil(t, code)
+			assert.Contains(t, err.Error(), "invalid wasm hash",
+				"a malformed hash is a caller error, not a missing entry")
+			assert.Empty(t, fake.calls,
+				"a malformed hash must be rejected before it costs a round trip")
+		})
+	}
 }
 
 // TestWasmHashIsOneRoundTrip is the property that makes refresh cheap: an

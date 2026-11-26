@@ -121,3 +121,46 @@ func TestMCPErrorJSONRoundTrip(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &decoded))
 	require.Equal(t, original, decoded, "MCPError must survive a JSON round trip unchanged")
 }
+
+func TestResultJSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		original mcp.Result
+	}{
+		{
+			name: "success response",
+			original: mcp.Result{
+				JSONRPC: "2.0",
+				ID:      1,
+				Result:  json.RawMessage(`{"status":"ok"}`),
+			},
+		},
+		{
+			// A nil json.RawMessage marshals as null and decodes back as the
+			// literal null rather than nil, so spell it out to keep the
+			// comparison exact.
+			name: "error response",
+			original: mcp.Result{
+				JSONRPC: "2.0",
+				ID:      2,
+				Result:  json.RawMessage(`null`),
+				Error:   &mcp.MCPError{Code: -32601, Message: "method not found"},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			data, err := json.Marshal(tc.original)
+			require.NoError(t, err)
+
+			var decoded mcp.Result
+			require.NoError(t, json.Unmarshal(data, &decoded))
+			require.Equal(t, tc.original, decoded, "Result must survive a JSON round trip unchanged")
+		})
+	}
+}
