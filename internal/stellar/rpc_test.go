@@ -120,22 +120,22 @@ func TestClose(t *testing.T) {
 		t.Parallel()
 
 		tests := []struct {
-			name    string
+			name	string
 			fetcher *stellar.RPCFetcher
 			wantErr bool
 		}{
 			{
-				name:    "happy path with active client",
+				name:	"happy path with active client",
 				fetcher: stellar.NewRPCFetcher("http://localhost:8000", nil),
 				wantErr: false,
 			},
 			{
-				name:    "repeated close calls",
+				name:	"repeated close calls",
 				fetcher: stellar.NewRPCFetcher("http://localhost:8000", nil),
 				wantErr: false,
 			},
 			{
-				name:    "empty or zero url fetcher",
+				name:	"empty or zero url fetcher",
 				fetcher: stellar.NewRPCFetcher("", nil),
 				wantErr: false,
 			},
@@ -543,39 +543,39 @@ func TestNetworkLogLabel(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		in      string
-		want    string
+		name	string
+		in	string
+		want	string
 	}{
 		{
-			name:    "happy path - public",
-			in:      "public",
-			want:    "public",
+			name:	"happy path - public",
+			in:	"public",
+			want:	"public",
 		},
 		{
-			name:    "happy path - testnet",
-			in:      "testnet",
-			want:    "testnet",
+			name:	"happy path - testnet",
+			in:	"testnet",
+			want:	"testnet",
 		},
 		{
-			name:    "happy path - futurenet",
-			in:      "futurenet",
-			want:    "futurenet",
+			name:	"happy path - futurenet",
+			in:	"futurenet",
+			want:	"futurenet",
 		},
 		{
-			name:    "empty input",
-			in:      "",
-			want:    "unknown",
+			name:	"empty input",
+			in:	"",
+			want:	"unknown",
 		},
 		{
-			name:    "invalid input",
-			in:      "not-a-valid-network",
-			want:    "unknown",
+			name:	"invalid input",
+			in:	"not-a-valid-network",
+			want:	"unknown",
 		},
 		{
-			name:    "boundary - random string",
-			in:      "Standalone Network ; February 2017",
-			want:    "unknown",
+			name:	"boundary - random string",
+			in:	"Standalone Network ; February 2017",
+			want:	"unknown",
 		},
 	}
 
