@@ -346,3 +346,214 @@ func TestUnsubscribeEdgeCases(t *testing.T) {
 		})
 	}
 }
+
+// TestListSubscriptionsEdgeCases covers table-driven edge cases for
+// ListSubscriptions: an empty registry, a subscription with no contract IDs,
+// an inactive subscription that must still be listed, newest-first ordering,
+// and a cancelled context.
+func TestListSubscriptionsEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		setup      func(ctx context.Context, m *Memory) []string
+		cancelCtx  bool
+		wantOrder  []int
+		wantCounts []int
+		wantActive []bool
+		wantErr    error
+	}{
+		{
+			name:      "empty registry returns an empty non-nil list",
+			wantOrder: nil,
+		},
+		{
+			name: "subscription with no contract IDs counts zero contracts",
+			setup: func(ctx context.Context, m *Memory) []string {
+				secret, err := m.Subscribe(ctx, "testnet", nil, "https://example.com/webhook")
+				require.NoError(t, err)
+				return []string{secret}
+			},
+			wantOrder:  []int{0},
+			wantCounts: []int{0},
+			wantActive: []bool{true},
+		},
+		{
+			name: "inactive subscriptions are still listed",
+			setup: func(ctx context.Context, m *Memory) []string {
+				secret, err := m.Subscribe(ctx, "testnet", []string{newerIDLow}, "https://example.com/webhook")
+				require.NoError(t, err)
+				require.NoError(t, m.MarkSubscriptionInactive(ctx, secret))
+				return []string{secret}
+			},
+			wantOrder:  []int{0},
+			wantCounts: []int{1},
+			wantActive: []bool{false},
+		},
+		{
+			name: "subscriptions are ordered newest first",
+			setup: func(ctx context.Context, m *Memory) []string {
+				base := time.Date(2026, 5, 6, 7, 8, 9, 0, time.UTC)
+				ids := make([]string, 0, 3)
+				for i := 0; i < 3; i++ {
+					at := base.Add(time.Duration(i) * time.Minute)
+					m.SetClock(func() time.Time { return at })
+					secret, err := m.Subscribe(ctx, "testnet", []string{newerIDLow, newerIDHigh}, "https://example.com/webhook")
+					require.NoError(t, err)
+					ids = append(ids, secret)
+				}
+				return ids
+			},
+			wantOrder:  []int{2, 1, 0},
+			wantCounts: []int{2, 2, 2},
+			wantActive: []bool{true, true, true},
+		},
+		{
+			name:      "cancelled context returns context.Canceled",
+			cancelCtx: true,
+			wantErr:   context.Canceled,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			m := NewMemory()
+
+			var ids []string
+			if tt.setup != nil {
+				ids = tt.setup(ctx, m)
+			}
+			if tt.cancelCtx {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+
+			items, err := m.ListSubscriptions(ctx)
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, items, "an empty listing is an empty list, not null")
+			require.Len(t, items, len(tt.wantOrder))
+			for i, idx := range tt.wantOrder {
+				assert.Equal(t, ids[idx], items[i].ID)
+				assert.Equal(t, tt.wantCounts[i], items[i].Contracts)
+				assert.Equal(t, tt.wantActive[i], items[i].Active)
+			}
+		})
+	}
+}
+
+// TestGetSubscriptionEdgeCases covers table-driven edge cases for
+// GetSubscription: empty and unknown secrets, a secret that differs only by
+// surrounding whitespace, a subscription with no contract IDs, a cancelled
+// context, and the copy returned to the caller.
+func TestGetSubscriptionEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		setup           func(ctx context.Context, m *Memory) string
+		secret          string
+		cancelCtx       bool
+		mutate          bool
+		wantErr         error
+		wantNetwork     string
+		wantContractIDs []string
+		wantActive      bool
+	}{
+		{
+			name:    "empty secret returns ErrNotFound",
+			secret:  "",
+			wantErr: ErrNotFound,
+		},
+		{
+			name:    "unknown secret returns ErrNotFound",
+			secret:  "sub_does_not_exist",
+			wantErr: ErrNotFound,
+		},
+		{
+			name: "secret with surrounding whitespace does not match",
+			setup: func(ctx context.Context, m *Memory) string {
+				secret, err := m.Subscribe(ctx, "testnet", []string{newerIDLow}, "https://example.com/webhook")
+				require.NoError(t, err)
+				return " " + secret + " "
+			},
+			wantErr: ErrNotFound,
+		},
+		{
+			name: "subscription with no contract IDs returns an empty slice",
+			setup: func(ctx context.Context, m *Memory) string {
+				secret, err := m.Subscribe(ctx, "testnet", nil, "https://example.com/webhook")
+				require.NoError(t, err)
+				return secret
+			},
+			wantNetwork:     "testnet",
+			wantContractIDs: []string{},
+			wantActive:      true,
+		},
+		{
+			name:      "cancelled context returns context.Canceled",
+			cancelCtx: true,
+			wantErr:   context.Canceled,
+		},
+		{
+			name: "returned subscription is a copy of the stored one",
+			setup: func(ctx context.Context, m *Memory) string {
+				secret, err := m.Subscribe(ctx, "testnet", []string{newerIDLow}, "https://example.com/webhook")
+				require.NoError(t, err)
+				return secret
+			},
+			mutate:          true,
+			wantNetwork:     "testnet",
+			wantContractIDs: []string{newerIDLow},
+			wantActive:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			m := NewMemory()
+
+			secret := tt.secret
+			if tt.setup != nil {
+				secret = tt.setup(ctx, m)
+			}
+			if tt.cancelCtx {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+
+			sub, err := m.GetSubscription(ctx, secret)
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				assert.Nil(t, sub, "a failed lookup returns no subscription")
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, sub)
+			assert.Equal(t, secret, sub.ID)
+			assert.Equal(t, tt.wantNetwork, sub.Network)
+			assert.Equal(t, tt.wantContractIDs, sub.ContractIDs)
+			assert.Equal(t, tt.wantActive, sub.Active)
+
+			if tt.mutate {
+				require.NotEmpty(t, sub.ContractIDs)
+				sub.ContractIDs[0] = newerIDHigh
+				again, err := m.GetSubscription(ctx, secret)
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantContractIDs, again.ContractIDs,
+					"mutating the returned subscription must not reach the stored one")
+			}
+		})
+	}
+}
