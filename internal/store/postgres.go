@@ -17,8 +17,8 @@ import (
 
 // Postgres is the Store backed by a Postgres database.
 type Postgres struct {
-	pool      *pgxpool.Pool
-	ownsPool  bool
+	pool     *pgxpool.Pool
+	ownsPool bool
 }
 
 var _ Store = (*Postgres)(nil)
