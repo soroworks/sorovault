@@ -474,7 +474,7 @@ func TestGetSubscriptionEdgeCases(t *testing.T) {
 		},
 		{
 			name:    "unknown secret returns ErrNotFound",
-			secret:  "sub_does_not_exist",
+			secret:  "sub_does_not_exist", // #nosec G101 -- test fixture, not a real credential
 			wantErr: ErrNotFound,
 		},
 		{
