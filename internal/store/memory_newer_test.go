@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -150,6 +151,180 @@ func TestMemoryTiedVersionsStayConsistentWithGet(t *testing.T) {
 		"the version flagged Current must be the interface GetSpec returns")
 	assert.Equal(t, "v2", got.Interface.Functions[0].Name,
 		"the latest save points the contract at its new interface")
+}
+
+// TestPingEdgeCases covers table-driven edge cases for Ping: a context whose
+// deadline has already passed, an already-cancelled context, and a deadline
+// far enough away that it must not fail the call.
+//
+// Ping also promises not to change any stored data, so every case seeds both
+// halves of the store and checks afterwards that neither moved.
+func TestPingEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	// A deadline in the past leaves the context already done, which is the
+	// boundary between "ask the backing service" and "stop now". Cancelling
+	// through t.Cleanup keeps the contexts alive for the parallel subtests
+	// below, which start only after this function returns.
+	expired, cancelExpired := context.WithDeadline(context.Background(), time.Unix(0, 0))
+	t.Cleanup(cancelExpired)
+	require.ErrorIs(t, expired.Err(), context.DeadlineExceeded, "the deadline must be in the past")
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.ErrorIs(t, cancelled.Err(), context.Canceled, "cancelling must mark the context done")
+
+	// Far enough away that the wall clock cannot overtake it while the
+	// test runs, so the case really tests "not yet cancelled".
+	future, cancelFuture := context.WithTimeout(context.Background(), time.Hour)
+	t.Cleanup(cancelFuture)
+
+	tests := []struct {
+		name    string
+		ctx     context.Context
+		wantErr error
+	}{
+		{
+			name:    "expired deadline reports DeadlineExceeded",
+			ctx:     expired,
+			wantErr: context.DeadlineExceeded,
+		},
+		{
+			name:    "cancelled context reports Canceled",
+			ctx:     cancelled,
+			wantErr: context.Canceled,
+		},
+		{
+			name: "future deadline succeeds",
+			ctx:  future,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			m := NewMemory()
+
+			require.NoError(t, m.Save(ctx,
+				Contract{ContractID: newerIDLow, Network: "testnet", CurrentWasmHash: "hash-ping"},
+				newerTestIface("ping")))
+			secret, err := m.Subscribe(ctx, "testnet", []string{newerIDLow}, "https://example.com/webhook")
+			require.NoError(t, err)
+
+			err = m.Ping(tt.ctx)
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+
+			got, err := m.GetContract(ctx, "testnet", newerIDLow)
+			require.NoError(t, err, "a ping must not remove a stored contract")
+			assert.Equal(t, "hash-ping", got.CurrentWasmHash)
+
+			versions, err := m.ListVersions(ctx, "testnet", newerIDLow)
+			require.NoError(t, err)
+			assert.Len(t, versions, 1, "a ping must not add or drop a version")
+
+			items, err := m.ListSubscriptions(ctx)
+			require.NoError(t, err)
+			require.Len(t, items, 1, "a ping must not remove a subscription")
+			assert.Equal(t, secret, items[0].ID)
+			assert.True(t, items[0].Active, "a ping must not deactivate a subscription")
+		})
+	}
+}
+
+// TestSubscribeEdgeCases covers table-driven edge cases for Subscribe: an
+// empty contract list, empty network and URL values, and an already-cancelled
+// context.
+func TestSubscribeEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	stamp := time.Date(2026, 8, 9, 10, 11, 12, 0, time.UTC)
+
+	tests := []struct {
+		name        string
+		ctx         context.Context
+		network     string
+		contractIDs []string
+		url         string
+		wantErr     error
+	}{
+		{
+			// An empty list is the boundary between "watch these" and
+			// "watch nothing". The store records the subscription as given;
+			// refusing an empty list is the API's job.
+			name:        "empty contract list is stored with zero contracts",
+			ctx:         context.Background(),
+			network:     "testnet",
+			contractIDs: nil,
+			url:         "https://example.com/webhook",
+		},
+		{
+			// Subscribe persists what it is given rather than inventing a
+			// default for a missing network or URL, so an invalid request can
+			// never be mistaken for a valid one later.
+			name:        "empty network and url are stored verbatim",
+			ctx:         context.Background(),
+			network:     "",
+			contractIDs: []string{},
+			url:         "",
+		},
+		{
+			name:        "cancelled context returns the error and stores nothing",
+			ctx:         cancelled,
+			network:     "testnet",
+			contractIDs: []string{newerIDLow},
+			url:         "https://example.com/webhook",
+			wantErr:     context.Canceled,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			m := NewMemory()
+			m.SetClock(func() time.Time { return stamp })
+
+			secret, err := m.Subscribe(tt.ctx, tt.network, tt.contractIDs, tt.url)
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				assert.Empty(t, secret, "a failed Subscribe must not hand back a secret")
+
+				items, listErr := m.ListSubscriptions(ctx)
+				require.NoError(t, listErr)
+				assert.Empty(t, items, "a cancelled Subscribe must not leave a subscription behind")
+				return
+			}
+			require.NoError(t, err)
+
+			assert.True(t, strings.HasPrefix(secret, "sub_"), "got %q", secret)
+			assert.Len(t, secret, len("sub_")+64, "the secret is 256 random bits, not a counter")
+
+			sub, err := m.GetSubscription(ctx, secret)
+			require.NoError(t, err)
+			assert.Equal(t, tt.network, sub.Network, "the network round-trips verbatim")
+			assert.Equal(t, tt.url, sub.URL, "the URL round-trips verbatim")
+			assert.Len(t, sub.ContractIDs, len(tt.contractIDs))
+			assert.True(t, sub.Active, "a new subscription is active")
+			assert.True(t, sub.CreatedAt.Equal(stamp), "the subscription carries the clock's timestamp")
+
+			items, err := m.ListSubscriptions(ctx)
+			require.NoError(t, err)
+			require.Len(t, items, 1)
+			assert.Equal(t, secret, items[0].ID)
+			assert.Equal(t, len(tt.contractIDs), items[0].Contracts, "the summary counts the stored contracts")
+			assert.True(t, items[0].Active)
+		})
+	}
 }
 
 // TestSetClockEdgeCases covers table-driven edge cases for SetClock:
