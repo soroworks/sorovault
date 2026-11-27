@@ -120,24 +120,24 @@ func TestClose(t *testing.T) {
 		t.Parallel()
 
 		tests := []struct {
-			name	string
-			fetcher	*stellar.RPCFetcher
-			wantErr	bool
+			name    string
+			fetcher *stellar.RPCFetcher
+			wantErr bool
 		}{
 			{
-				name:	"happy path with active client",
-				fetcher:	stellar.NewRPCFetcher("http://localhost:8000", nil),
-				wantErr:	false,
+				name:    "happy path with active client",
+				fetcher: stellar.NewRPCFetcher("http://localhost:8000", nil),
+				wantErr: false,
 			},
 			{
-				name:	"repeated close calls",
-				fetcher:	stellar.NewRPCFetcher("http://localhost:8000", nil),
-				wantErr:	false,
+				name:    "repeated close calls",
+				fetcher: stellar.NewRPCFetcher("http://localhost:8000", nil),
+				wantErr: false,
 			},
 			{
-				name:	"empty or zero url fetcher",
-				fetcher:	stellar.NewRPCFetcher("", nil),
-				wantErr:	false,
+				name:    "empty or zero url fetcher",
+				fetcher: stellar.NewRPCFetcher("", nil),
+				wantErr: false,
 			},
 		}
 
