@@ -542,10 +542,47 @@ func TestNetworkName(t *testing.T) {
 func TestNetworkLogLabel(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, "public", stellar.NetworkLogLabel("public"))
-	assert.Equal(t, "testnet", stellar.NetworkLogLabel("testnet"))
-	assert.Equal(t, "futurenet", stellar.NetworkLogLabel("futurenet"))
-	assert.Equal(t, "unknown", stellar.NetworkLogLabel("Standalone Network ; February 2017"))
+	tests := []struct {
+		name    string
+		in      string
+		want    string
+	}{
+		{
+			name:    "happy path - public",
+			in:      "public",
+			want:    "public",
+		},
+		{
+			name:    "happy path - testnet",
+			in:      "testnet",
+			want:    "testnet",
+		},
+		{
+			name:    "happy path - futurenet",
+			in:      "futurenet",
+			want:    "futurenet",
+		},
+		{
+			name:    "empty input",
+			in:      "",
+			want:    "unknown",
+		},
+		{
+			name:    "invalid input",
+			in:      "not-a-valid-network",
+			want:    "unknown",
+		},
+		{
+			name:    "boundary - random string",
+			in:      "Standalone Network ; February 2017",
+			want:    "unknown",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		assert.Equal(t, tt.want, stellar.NetworkLogLabel(tt.in))
+	}
 }
 
 func TestValidateContractID(t *testing.T) {

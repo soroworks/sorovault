@@ -11,6 +11,16 @@ enabled) runs the refresh sweeper in the same process. There is no separate
 worker, queue or cache to operate, and the templates and migrations are embedded
 in the binary.
 
+### HTTP listener address
+
+`HTTP_ADDR` controls the address and port where the JSON API and browse UI listen. It defaults to `:8080`, which listens on port 8080 on all interfaces. For a loopback-only development listener, use `127.0.0.1:8080`; for an explicit public interface, use an address such as `0.0.0.0:8080` and put TLS and access controls at the proxy or configure `TLS_CERT_FILE` and `TLS_KEY_FILE` in SoroVault.
+
+Set it in the environment before starting the service:
+
+```bash
+HTTP_ADDR=127.0.0.1:8080 sorovault serve
+```
+
 ## Deployment topology
 
 ```
@@ -56,6 +66,20 @@ Do not point two processes with different `NETWORK_PASSPHRASE` values at the
 same network expecting them to be interchangeable: one of them will refuse to
 work, which is the intended behaviour.
 
+```bash
+# testnet process
+RPC_URL=https://soroban-testnet.stellar.org \
+NETWORK_PASSPHRASE="Test SDF Network ; September 2015" \
+DATABASE_URL=postgres://user:pass@db:5432/sorovault \
+sorovault serve
+
+# mainnet process — different passphrase, same database is fine
+RPC_URL=https://your-mainnet-rpc-provider.example \
+NETWORK_PASSPHRASE="Public Global Stellar Network ; September 2015" \
+DATABASE_URL=postgres://user:pass@db:5432/sorovault \
+sorovault serve
+```
+
 ### Replicas and the refresher
 
 Every `serve` process with `REFRESH_INTERVAL` greater than zero runs its own
@@ -71,6 +95,17 @@ refreshing. With more than one replica:
 The Helm chart defaults to `replicaCount: 1`. Scaling readers is safe for the
 API, but the refresh setting is process-wide and has no per-replica override
 beyond the environment, so arrange the split deliberately.
+
+```yaml
+# values.yaml: scale API readers without duplicating sweeps
+replicaCount: 3
+config:
+  # Only one dedicated refresher process sweeps; the API replicas do not.
+  refreshInterval: 0     # disable scheduled sweeps on the reader Deployment
+
+# A separate Deployment or CronJob carries REFRESH_INTERVAL:
+# REFRESH_INTERVAL=6h sorovault serve   (single replica)
+```
 
 ### TLS and the proxy
 
@@ -286,6 +321,35 @@ Recommended upgrade order:
 4. Roll out the new binary.
 5. Run `sorovault doctor` and check `GET /api/stats` and the logs.
 
+```console
+# 1. Download and verify a release (replace both version strings to choose another release)
+$ gh release download v0.2.0 --repo soroworks/sorovault \
+    --pattern 'sorovault_0.2.0_linux_amd64.tar.gz*' \
+    --pattern checksums.txt
+$ gh attestation verify sorovault_0.2.0_linux_amd64.tar.gz \
+    --repo soroworks/sorovault
+$ sha256sum -c checksums.txt --ignore-missing
+
+# 2. Back up the database first
+$ pg_dump --format=custom --no-owner \
+    --file="sorovault-pre-0.2.0-$(date +%F).dump" "$DATABASE_URL"
+
+# 3. Apply migrations with the new binary
+$ ./sorovault migrate
+applied migrations; now at version <N>
+
+# 4. Roll out the new binary (systemd example)
+$ sudo cp sorovault /usr/local/bin/sorovault
+$ sudo systemctl restart sorovault
+
+# 5. Confirm health
+$ sorovault doctor
+PASS  database    the database answers
+PASS  migrations  the database is at version <N>, the latest is <N>
+PASS  rpc         the endpoint is reachable, serving testnet
+PASS  passphrase  the endpoint serves the configured network
+```
+
 The Helm chart's migration Job uses the same image and environment as the
 Deployment. If it fails, Helm stops the upgrade rather than starting a new
 binary against a schema it does not understand.
@@ -412,6 +476,21 @@ Keep
 `RPC_TIMEOUT` comfortably below `REFRESH_INTERVAL`; a hung RPC call holds the
 sweep at that contract until the timeout expires.
 
+```bash
+# Small registry on public testnet RPC: check every 6 hours
+REFRESH_INTERVAL=6h sorovault serve
+
+# Large registry on a private RPC endpoint: shorter interval, explicit timeout
+REFRESH_INTERVAL=1h \
+RPC_TIMEOUT=20s \
+MAX_CONCURRENT_REGISTRATIONS=8 \
+sorovault serve
+
+# Precise cadence via cron, polling off in serve
+REFRESH_INTERVAL=0 sorovault serve
+# crontab: 0 * * * * DATABASE_URL=... RPC_URL=... sorovault refresh --all
+```
+
 ### Webhook delivery
 
 Set `REFRESH_WEBHOOK_URL` to post one JSON message per upgraded contract. The
@@ -438,8 +517,11 @@ messages.
 
 ## Monitoring
 
-There is no Prometheus metrics endpoint. Monitor the process, the database, RPC
-and the logs; add instrumentation if you need metrics beyond that.
+When `METRICS_ADDR` is set, SoroVault exposes Prometheus metrics on that
+separate address. It is off by default; see the [README metrics reference](../README.md#metrics)
+for the available series. Monitor the process, database, RPC and logs as well:
+webhook delivery failures are reported in the logs and do not have a Prometheus
+metric.
 
 ### Liveness and readiness
 
@@ -496,6 +578,34 @@ only, so a pass does not prove that `getLedgerEntries` is healthy.
   above. Public endpoints rate-limit; a sudden rise in `failed` after a deploy
   is often the refresh interval being too short.
 
+```yaml
+# Prometheus alerting rules (Prometheus / Alertmanager format).
+# Set the 6-hour threshold to match your REFRESH_INTERVAL plus a margin.
+groups:
+  - name: sorovault
+    rules:
+      # Refresher has not completed a sweep in more than 3× its interval
+      - alert: SoroVaultRefreshStalled
+        expr: sorovault_refresh_last_success_timestamp_seconds > 0 and (time() - sorovault_refresh_last_success_timestamp_seconds > 3 * 6 * 3600)
+        annotations:
+          summary: "SoroVault refresh sweeps have stalled"
+
+      # At least one contract failed to refresh in the last sweep
+      - alert: SoroVaultRefreshFailed
+        expr: increase(sorovault_refresh_contracts_failed_total[1h]) > 0
+        annotations:
+          summary: "One or more contract refreshes failed"
+
+```
+
+Apply the stalled alert only to instances with scheduled refresh enabled
+(`REFRESH_INTERVAL` greater than `0`); reader replicas with refresh disabled
+keep the success timestamp at `0`.
+
+SoroVault does not expose a webhook failure metric. Route the `refresh webhook
+failed` log line to your log monitoring system and alert on it there; reconcile
+missed notifications from `GET /api/upgrades`.
+
 `LOG_LEVEL=info` gives one line per sweep, per upgrade and per failure.
 `LOG_LEVEL=debug` adds one line per HTTP request and per unchanged contract,
 which is useful while diagnosing but noisy for a large registry.
@@ -517,3 +627,30 @@ which is useful while diagnosing but noisy for a large registry.
 - [ ] Backups run and a restore has been tested.
 - [ ] Alerts cover `doctor`, `failed`/`busy` sweeps, webhook failures, database
       saturation and disk.
+
+```console
+# Verify the deployment from outside: liveness, then doctor
+$ curl -sS https://registry.example.com/healthz
+{"status":"ok","version":"0.2.0"}
+
+$ sorovault doctor
+PASS  database    the database answers
+PASS  migrations  the database is at version <N>, the latest is <N>
+PASS  rpc         the endpoint is reachable, serving testnet
+PASS  passphrase  the endpoint serves the configured network
+
+# Check the last sweep and registry size
+$ curl -sS https://registry.example.com/api/stats | jq '{contracts, versions: .versions, last_refresh}'
+{
+  "contracts": 148,
+  "versions": 203,
+  "last_refresh": {
+    "checked": 148,
+    "changed": 2,
+    "failed": 0,
+    "busy": 0,
+    "missing": 1,
+    "completed_at": "2026-11-24T08:00:03Z"
+  }
+}
+```

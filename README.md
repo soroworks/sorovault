@@ -332,7 +332,7 @@ back out of what it became. `--json` prints the same rows for scripts.
 | `DATABASE_MIN_CONNS` | `0` | connections the pool keeps open between requests |
 | `RPC_URL` | `https://soroban-testnet.stellar.org` | Stellar RPC endpoint contract code and upgrade events are read from (must be non-empty; e.g. `https://rpc-futurenet.stellar.org` for futurenet) |
 | `NETWORK_PASSPHRASE` | `Test SDF Network ; September 2015` | the network you expect `RPC_URL` to serve (e.g. `Public Global Stellar Network ; September 2015` for mainnet) |
-| `HTTP_ADDR` | `:8080` | listen address |
+| `HTTP_ADDR` | `:8080` | listen address for the JSON API and browse UI; default `:8080` listens on all interfaces (`--addr` overrides; e.g. `127.0.0.1:8080` to restrict to loopback) |
 | `METRICS_ADDR` | — (off) | separate `host:port` serving Prometheus metrics at `GET /metrics`; must differ from `HTTP_ADDR`. See [Metrics](#metrics) |
 | `TLS_CERT_FILE` | — | PEM certificate path; set with `TLS_KEY_FILE` to serve HTTPS (`--tls-cert` overrides) |
 | `TLS_KEY_FILE` | — | PEM private key path; set with `TLS_CERT_FILE` (`--tls-key` overrides) |
@@ -353,6 +353,22 @@ back out of what it became. `--json` prints the same rows for scripts.
 | `READ_ONLY` | `false` | refuse every write endpoint with 405; reads and automatic refreshes stay on (`--read-only` overrides) |
 | `API_TOKENS` | — | comma-separated bearer tokens the write endpoints accept; unset keeps writes public |
 | `CONFIG_PATH` | — | YAML config file whose values sit under the environment (`--config` names it explicitly) |
+
+`DATABASE_URL` is the only required variable (default: none). It is a standard
+PostgreSQL connection string, for example
+`postgres://sorovault:password@localhost:5432/sorovault?sslmode=disable`. If
+your platform mounts secrets as files, set `DATABASE_URL_FILE` to the path
+instead; the file's trailing newline is trimmed. Setting both is a startup
+error. `sslmode=verify-full` (or your platform's equivalent) is recommended for
+any database that is not on a private loopback network.
+
+`HTTP_ADDR` is the listen address for the JSON API and browse UI (default:
+`:8080`). The default binds on all interfaces; to restrict to loopback, set it
+to `127.0.0.1:8080`. When TLS terminates at a reverse proxy, bind SoroVault to
+a private address reachable by the proxy (use `127.0.0.1:8080` when both run on
+the same host); see the [TLS and the
+proxy](#tls-and-the-proxy) section in the operations guide. `--addr` overrides
+this variable for the duration of one `serve` invocation.
 
 `RPC_URL` sets the Stellar RPC endpoint that SoroVault reads contract code,
 network passphrases, and upgrade events from (default:
@@ -615,6 +631,19 @@ added without touching the registry.
 `sorovault backfill-origins` fills in contracts registered before this existed,
 or whose lookup failed. It only looks at contracts still without a creator, so
 it is safe to run repeatedly.
+
+For example, a contract whose deployer is known answers:
+
+```console
+$ curl -s localhost:8080/api/contracts/CDZZ…4PAN | jq .origin
+{
+  "known": true,
+  "creator": "GABC…XYZ",
+  "created_ledger": 4242
+}
+```
+
+When the origin could not be determined, the same request answers `"origin": {"known": false}` instead. Running `sorovault backfill-origins` retries the lookup for contracts that lack one.
 
 ### Verified publishers
 

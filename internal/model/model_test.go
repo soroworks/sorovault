@@ -2,6 +2,7 @@ package model_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -142,6 +143,53 @@ func TestScalarPanicsOnComposite(t *testing.T) {
 
 	assert.Panics(t, func() { model.Scalar(model.KindVec) },
 		"Scalar must reject composite kinds rather than return a type with no Display")
+}
+
+// TestScalarEdgeCases covers the inputs the happy-path table in TestRender does
+// not: an unknown kind, an empty kind, and every registered scalar kind being
+// accepted rather than just the handful that table happens to use.
+func TestScalarEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	t.Run("panics on a kind that is not scalar", func(t *testing.T) {
+		t.Parallel()
+
+		// A misspelled or newer kind must fail loudly: the panic is the guard
+		// that stops a Type with an empty Display reaching a renderer.
+		assert.Panics(t, func() { model.Scalar(model.Kind("u33")) })
+	})
+
+	t.Run("panics on the empty kind", func(t *testing.T) {
+		t.Parallel()
+
+		// The zero Kind is what an unfinished decoder produces, so it is the
+		// most likely bad input in practice.
+		assert.Panics(t, func() { model.Scalar(model.Kind("")) })
+	})
+
+	t.Run("accepts every registered scalar kind with a non-empty display", func(t *testing.T) {
+		t.Parallel()
+
+		kinds := []model.Kind{
+			model.KindVal, model.KindBool, model.KindVoid, model.KindError,
+			model.KindU32, model.KindI32, model.KindU64, model.KindI64,
+			model.KindTimepoint, model.KindDuration,
+			model.KindU128, model.KindI128, model.KindU256, model.KindI256,
+			model.KindBytes, model.KindString, model.KindSymbol,
+			model.KindAddress, model.KindMuxedAddress,
+		}
+
+		for _, kind := range kinds {
+			got := model.Scalar(kind)
+
+			assert.Equal(t, kind, got.Kind, "Scalar must preserve the kind it was given")
+			assert.NotEmpty(t, got.Display, "kind %q must render to something", kind)
+			// Render recomputes Display from structure, so the two agreeing
+			// proves Scalar filled in the same value the renderer would.
+			assert.Equal(t, got.Display, model.Render(got),
+				"kind %q: Display and Render must agree", kind)
+		}
+	})
 }
 
 func TestSignature(t *testing.T) {
@@ -496,4 +544,19 @@ func TestInterfaceFunctionEdgeCases(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ExampleNewEnvMeta shows how the two version numbers the section carries become
+// the single version string consumers read. A release carries the protocol on its
+// own; a pre-release appends the pre-release number after a dot.
+func ExampleNewEnvMeta() {
+	release := model.NewEnvMeta(25, 0)
+	preRelease := model.NewEnvMeta(25, 1)
+
+	fmt.Println(release.InterfaceVersion)
+	fmt.Println(preRelease.InterfaceVersion)
+
+	// Output:
+	// 25
+	// 25.1
 }
