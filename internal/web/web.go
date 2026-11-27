@@ -199,7 +199,7 @@ type statsData struct {
 	MetaTitle string
 	MetaURL   string
 
-	Stats             *store.Stats
+	Stats             *store.StatsDetail
 	Networks          []string
 	ReadOnly          bool
 	WriteAuthRequired bool
@@ -207,7 +207,7 @@ type statsData struct {
 
 // stats renders the registry statistics page.
 func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
-	st, err := s.reg.Store().Stats(r.Context())
+	st, err := s.reg.Store().StatsDetail(r.Context())
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -218,7 +218,7 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	meta := "SoroVault A� registry statistics"
+	meta := "SoroVault registry statistics"
 	var metaURL string
 	if s.publicURL != "" {
 		metaURL = s.publicURL + "/stats"
