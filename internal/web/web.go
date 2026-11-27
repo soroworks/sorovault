@@ -161,16 +161,6 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	s.indexPage(w, r, http.StatusOK, indexData{})
 }
 
-// stats renders the registry-wide summary: counts per network, the symbols
-// current interfaces share most, and the newest registrations.
-func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
-	summary, err := s.reg.Store().StatsDetail(r.Context())
-	if err != nil {
-		s.fail(w, r, err)
-		return
-	}
-	s.render(w, r, "stats.html", statsData{Stats: summary})
-}
 
 // indexPage renders the index at a given status. It takes the data a failed
 // registration left behind, so the visitor sees why their contract was not
@@ -568,9 +558,6 @@ type contractData struct {
 	Networks        []string
 }
 
-type statsData struct {
-	Stats *store.StatsDetail
-}
 
 // render writes a template, buffering it first so that a failure midway
 // through cannot emit a half-written page under a 200 status.
