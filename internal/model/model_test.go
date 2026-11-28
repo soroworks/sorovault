@@ -229,6 +229,33 @@ func TestSignature(t *testing.T) {
 			},
 			want: "fn balances(who: Address) -> Vec<i128>",
 		},
+		{
+			name: "zero-value function",
+			fn:   model.Function{},
+			// The empty function is what an unfinished decoder produces, so the
+			// renderer must stay well-formed rather than panicking on it.
+			want: "fn ()",
+		},
+		{
+			name: "param with an unset type",
+			fn: model.Function{
+				Name:   "f",
+				Inputs: []model.Param{{Name: "arg"}},
+			},
+			// An unset Type renders as the empty string, leaving the type slot
+			// of the signature blank instead of dropping the parameter entirely.
+			want: "fn f(arg: )",
+		},
+		{
+			name: "multiple outputs render only the first",
+			fn: model.Function{
+				Name:    "f",
+				Outputs: []model.Type{model.Scalar(model.KindU32), model.Scalar(model.KindI128)},
+			},
+			// The spec constrains Outputs to at most one entry; anything past
+			// the first is ignored rather than joined or rejected.
+			want: "fn f() -> u32",
+		},
 	}
 
 	for _, tt := range tests {
