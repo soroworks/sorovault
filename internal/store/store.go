@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/soroworks/sorovault/internal/model"
 )
@@ -38,6 +39,26 @@ const (
 	MaxTagLength    = 32
 	TagToken        = "token"
 )
+
+// ErrInvalidName is returned when a contract name exceeds MaxContractNameLength
+// or contains control characters.
+var ErrInvalidName = errors.New("store: invalid contract name")
+
+// MaxContractNameLength is the longest human-readable name a contract may carry.
+const MaxContractNameLength = 100
+
+// ValidateName trims a contract name and checks that it fits within
+// MaxContractNameLength and contains no control characters.
+func ValidateName(raw string) (string, error) {
+	name := strings.TrimSpace(raw)
+	if utf8.RuneCountInString(name) > MaxContractNameLength {
+		return "", fmt.Errorf("%w: name is longer than %d characters", ErrInvalidName, MaxContractNameLength)
+	}
+	if strings.ContainsFunc(name, unicode.IsControl) {
+		return "", fmt.Errorf("%w: name contains control characters", ErrInvalidName)
+	}
+	return name, nil
+}
 
 // SnapshotVersion is the on-disk format version of a Snapshot. Reading a
 // snapshot with any other version is refused rather than guessed at.
@@ -742,6 +763,9 @@ type Store interface {
 	// is the caller's job. It returns ErrNotFound when the contract is not
 	// in the registry.
 	SetName(ctx context.Context, network, contractID, name string) error
+
+	// UpdateName sets or updates the human-readable name of an existing contract.
+	UpdateName(ctx context.Context, network, contractID, name string) error
 
 	// SetOrigin records who created the contract and in which ledger. Both
 	// must be set; recording an origin is how an unknown one becomes known.

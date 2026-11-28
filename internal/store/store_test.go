@@ -298,6 +298,19 @@ func runStoreSuite(t *testing.T, newStore factory) {
 		got, err = s.GetContract(ctx, "testnet", idA)
 		require.NoError(t, err)
 		assert.Equal(t, "https://github.com/example/repo", got.SourceURL, "refresh must preserve source metadata")
+
+		require.NoError(t, s.UpdateName(ctx, "testnet", idA, "  Example Token  "))
+		got, err = s.GetContract(ctx, "testnet", idA)
+		require.NoError(t, err)
+		assert.Equal(t, "Example Token", got.Name, "name is trimmed and persisted")
+
+		require.NoError(t, s.Save(ctx, contract(idA, "testnet", "hash2"), iface("balance")))
+		got, err = s.GetContract(ctx, "testnet", idA)
+		require.NoError(t, err)
+		assert.Equal(t, "Example Token", got.Name, "a refresh with an empty name must not clear the existing name")
+
+		assert.ErrorIs(t, s.UpdateName(ctx, "testnet", idA, "bad\x00name"), store.ErrInvalidName)
+		assert.ErrorIs(t, s.UpdateName(ctx, "testnet", idB, "Missing"), store.ErrNotFound)
 	})
 
 	t.Run("names round-trip and survive a refresh", func(t *testing.T) {

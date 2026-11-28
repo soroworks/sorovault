@@ -61,6 +61,9 @@ search matches. Adding again without --name keeps the existing name.`,
 			if len(contractIDs) == 0 {
 				return fmt.Errorf("no contract IDs found")
 			}
+			if name != "" && len(contractIDs) > 1 {
+				return fmt.Errorf("--name can only be used when adding a single contract")
+			}
 			if cmd.Flags().Changed("name") {
 				normalized, err := registry.NormalizeName(name)
 				if err != nil {

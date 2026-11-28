@@ -901,6 +901,7 @@ through golang-migrate, and migrations are short-lived either way.
 | `POST` | `/api/wasm/{hash}` | catalog uploaded code before a contract runs it |
 | `GET` | `/api/wasm/{hash}` | read a catalogued uploaded-code interface — `?network=` |
 | `GET` | `/api/contracts/{id}` | the decoded ABI — `?network=`, `?wasm_hash=`, `?download=1` |
+| `PATCH` | `/api/contracts/{id}` | rename a contract — `{"name": "…"}` |
 | `GET` | `/api/wasm/{hash}/contracts` | every contract running a given WASM — `?network=`, `?ever=`, `?limit=`, `?offset=` |
 | `GET` | `/api/contracts/{id}` | the decoded ABI — `?network=`, `?wasm_hash=` |
 | `PATCH` | `/api/contracts/{id}` | rename the contract — `{"name": "Example Token"}` |
