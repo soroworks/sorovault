@@ -54,6 +54,7 @@ func TestMigrationRoundtrip(t *testing.T) {
 	checkColumnAfterRoundtrip(t, ctx, dbURL, "specs", "symbols")
 	checkColumnAfterRoundtrip(t, ctx, dbURL, "contracts", "source_url")
 	checkColumnAfterRoundtrip(t, ctx, dbURL, "contracts", "source_commit")
+	checkColumnAfterRoundtrip(t, ctx, dbURL, "audit_log", "action")
 }
 
 // isolatedDatabase creates an empty database next to the one baseURL names
