@@ -493,6 +493,89 @@ func TestSweepFailsWhenNetworkUnresolvable(t *testing.T) {
 	assert.ErrorContains(t, err, "rpc down")
 }
 
+// TestSweepEdgeCases covers the boundary conditions the Sweep tests above do
+// not: an empty registry, and a context cancelled before and during a sweep.
+func TestSweepEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		// contracts is how many stale contracts the registry holds.
+		contracts int
+		// cancelBefore cancels the context before Sweep is called.
+		cancelBefore bool
+		// cancelDuring cancels the context from inside the first refresh.
+		cancelDuring bool
+		want         refresher.Summary
+		wantErr      error
+	}{
+		{
+			name:      "empty registry sweeps to a zero summary",
+			contracts: 0,
+			want:      refresher.Summary{},
+		},
+		{
+			name:         "pre-cancelled context fails before any contract is checked",
+			contracts:    0,
+			cancelBefore: true,
+			// Resolving the network and the stale set goes through the same
+			// context, so cancellation surfaces there even with no work to do.
+			want:    refresher.Summary{},
+			wantErr: context.Canceled,
+		},
+		{
+			name:         "cancelled mid-sweep returns the context error and partial progress",
+			contracts:    3,
+			cancelDuring: true,
+			// The in-flight refresh fails with the cancellation and is counted
+			// as failed; the loop then stops before starting the second.
+			want:    refresher.Summary{Checked: 1, Failed: 1},
+			wantErr: context.Canceled,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newFixture(t)
+			for i := 0; i < tt.contracts; i++ {
+				f.register(t, contractID(t, i+1), "hello")
+				f.clock.Advance(time.Second)
+			}
+			if tt.contracts > 0 {
+				f.clock.Advance(interval + time.Minute)
+			}
+			before := f.fake.Calls["WasmHash"]
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tt.cancelBefore {
+				cancel()
+			}
+			if tt.cancelDuring {
+				f.fake.BeforeFetch = func(context.Context, string) error {
+					cancel()
+					return nil
+				}
+			}
+
+			sum, err := f.refresher(t).Sweep(ctx)
+
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tt.want, sum)
+			if tt.contracts == 0 {
+				assert.Equal(t, before, f.fake.Calls["WasmHash"],
+					"an empty registry must not cost any RPC calls")
+			}
+		})
+	}
+}
+
 // TestSweepDefersWhenTheRegistryIsBusy proves a busy registry defers a
 // refresh rather than failing it: the contract stays stale, so the next
 // sweep picks it up.
