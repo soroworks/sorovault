@@ -161,7 +161,6 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	s.indexPage(w, r, http.StatusOK, indexData{})
 }
 
-
 // indexPage renders the index at a given status. It takes the data a failed
 // registration left behind, so the visitor sees why their contract was not
 // added with the ID they typed still in the form.
@@ -557,7 +556,6 @@ type contractData struct {
 	IsCurrent       bool
 	Networks        []string
 }
-
 
 // render writes a template, buffering it first so that a failure midway
 // through cannot emit a half-written page under a 200 status.
