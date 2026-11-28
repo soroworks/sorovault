@@ -47,6 +47,10 @@ type Options struct {
 	// Notifier, when set, is told about every contract whose interface
 	// changed during a sweep. Delivery is best effort.
 	Notifier Notifier
+	// Broker, when set, fans upgrades out to connected SSE clients. When
+	// nil, New creates a default broker so Refresher.Broker is always
+	// usable.
+	Broker *Broker
 	// Logger receives one line per sweep and one per failure. Defaults to
 	// slog.Default.
 	Logger *slog.Logger
@@ -84,6 +88,7 @@ type Refresher struct {
 	interval time.Duration
 	timeout  time.Duration
 	notifier Notifier
+	broker   *Broker
 	log      *slog.Logger
 	now      func() time.Time
 	wait     func(context.Context, time.Duration) error
@@ -119,6 +124,10 @@ func New(reg Registry, opts Options) (*Refresher, error) {
 	if eventsInterval <= 0 {
 		eventsInterval = defaultEventsInterval
 	}
+	broker := opts.Broker
+	if broker == nil {
+		broker = NewBroker(BrokerOptions{})
+	}
 	return &Refresher{
 		events:         opts.Events,
 		eventsInterval: eventsInterval,
@@ -126,12 +135,16 @@ func New(reg Registry, opts Options) (*Refresher, error) {
 		interval:       opts.Interval,
 		timeout:        opts.Timeout,
 		notifier:       opts.Notifier,
+		broker:         broker,
 		log:            log,
 		now:            now,
 		wait:           wait,
 		observer:       opts.Observer,
 	}, nil
 }
+
+// Broker returns the in-process upgrade broker this refresher publishes to.
+func (r *Refresher) Broker() *Broker { return r.broker }
 
 // SweepRecord is what the most recent completed sweep did and when it
 // finished. Serve reports it at GET /api/stats; it is deliberately in
@@ -404,6 +417,9 @@ func (r *Refresher) notify(ctx context.Context, network string, result *registry
 		ChangedAt:    r.now().UTC(),
 	}
 
+	if r.broker != nil {
+		_ = r.broker.Notify(ctx, change)
+	}
 	r.notifySubscribers(ctx, change)
 	if r.notifier == nil {
 		return

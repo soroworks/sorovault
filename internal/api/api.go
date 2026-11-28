@@ -48,6 +48,7 @@ type Server struct {
 	log       *slog.Logger
 	cache     *interfaceCache
 	rateLimit *clientLimiter
+	broker    *refresher.Broker
 
 	// lastSweep, when set, reports the most recent automatic refresh
 	// sweep. It is nil when refresh is disabled, and GET /api/stats then
@@ -74,7 +75,12 @@ func NewServer(reg *registry.Registry, log *slog.Logger) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{reg: reg, log: log, cache: newInterfaceCache(interfaceCacheBytes)}
+	return &Server{
+		reg:    reg,
+		log:    log,
+		cache:  newInterfaceCache(interfaceCacheBytes),
+		broker: refresher.NewBroker(refresher.BrokerOptions{}),
+	}
 }
 
 // SetReadOnly makes the server's write routes refuse with 405 instead of
@@ -155,6 +161,7 @@ func (s *Server) Routes() chi.Router {
 	r.Get("/keys", s.getKeys)
 	r.Get("/stats", s.getStats)
 	r.Get("/upgrades", s.listUpgrades)
+	r.Get("/upgrades/stream", s.streamUpgrades)
 	r.Get("/upgrades.atom", s.upgradesAtom)
 	r.Get("/openapi.json", serveOpenAPI)
 	r.Post("/subscriptions", s.write(s.subscribeContract))
@@ -909,7 +916,8 @@ func compressResponses(types ...string) func(http.Handler) http.Handler {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !acceptsGzip(r.Header.Get("Accept-Encoding")) {
+			if !acceptsGzip(r.Header.Get("Accept-Encoding")) ||
+				strings.HasSuffix(r.URL.Path, "/upgrades/stream") {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -1502,6 +1510,7 @@ func (s *Server) registerContract(w http.ResponseWriter, r *http.Request) {
 		}
 		result.Contract = *updated
 	}
+	s.publishUpgradeIfChanged(result)
 
 	status := http.StatusOK
 	if result.Created {
@@ -1602,6 +1611,7 @@ func (s *Server) registerOne(r *http.Request, contractID string) batchResult {
 			Error:      message,
 		}
 	}
+	s.publishUpgradeIfChanged(result)
 
 	status := batchStatusUnchanged
 	switch {
@@ -1628,6 +1638,7 @@ func (s *Server) refreshContract(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	s.publishUpgradeIfChanged(result)
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -1775,7 +1786,7 @@ func (s *Server) errorStatus(r *http.Request, err error) (int, string) {
 	case errors.Is(err, registry.ErrNetworkMismatch):
 		return http.StatusServiceUnavailable, err.Error()
 
-	case errors.Is(err, registry.ErrBusy):
+	case errors.Is(err, registry.ErrBusy), errors.Is(err, refresher.ErrStreamFull):
 		return http.StatusServiceUnavailable, err.Error()
 
 	case errors.Is(err, registry.ErrInvalidClaim), errors.Is(err, registry.ErrInvalidName), errors.Is(err, store.ErrInvalidTag):

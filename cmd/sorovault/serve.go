@@ -218,6 +218,7 @@ func newRouterWith(reg *registry.Registry, log *slog.Logger, refresh *refresher.
 	server := api.NewServer(reg, log)
 	if refresh != nil {
 		server.SetLastSweep(refresh.LastSweep)
+		server.SetUpgradeBroker(refresh.Broker())
 	}
 	if cfg != nil {
 		server.SetRateLimit(api.RateLimitOptions{
@@ -259,7 +260,14 @@ func newRouterWith(reg *registry.Registry, log *slog.Logger, refresh *refresher.
 	r.Mount("/api", server.Routes())
 	r.Mount("/", ui.Routes())
 
-	return http.TimeoutHandler(r, requestTimeout, `{"error":"request timed out"}`), nil
+	timed := http.TimeoutHandler(r, requestTimeout, `{"error":"request timed out"}`)
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path == "/api/upgrades/stream" {
+			r.ServeHTTP(w, req)
+			return
+		}
+		timed.ServeHTTP(w, req)
+	}), nil
 }
 
 // corsMiddleware builds the opt-in CORS layer. It returns nil when no
