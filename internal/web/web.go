@@ -161,17 +161,6 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	s.indexPage(w, r, http.StatusOK, indexData{})
 }
 
-// stats renders the registry-wide summary: counts per network, the symbols
-// current interfaces share most, and the newest registrations.
-func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
-	summary, err := s.reg.Store().StatsDetail(r.Context())
-	if err != nil {
-		s.fail(w, r, err)
-		return
-	}
-	s.render(w, r, "stats.html", statsData{Stats: summary})
-}
-
 // indexPage renders the index at a given status. It takes the data a failed
 // registration left behind, so the visitor sees why their contract was not
 // added with the ID they typed still in the form.
@@ -204,8 +193,47 @@ func (s *Server) indexPage(w http.ResponseWriter, r *http.Request, status int, d
 	s.renderStatus(w, r, status, "index.html", data)
 }
 
-// maxRegisterForm caps the registration form's body. It carries a single
-// contract ID, so anything larger is a mistake.
+// statsData is the values the statistics template renders.
+type statsData struct {
+	MetaTitle string
+	MetaURL   string
+
+	Stats             *store.StatsDetail
+	Networks          []string
+	ReadOnly          bool
+	WriteAuthRequired bool
+}
+
+// stats renders the registry statistics page.
+func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
+	st, err := s.reg.Store().StatsDetail(r.Context())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	networks, err := s.reg.Store().ListNetworks(r.Context())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+
+	meta := "SoroVault registry statistics"
+	var metaURL string
+	if s.publicURL != "" {
+		metaURL = s.publicURL + "/stats"
+		meta = "SoroVault registry statistics"
+	}
+
+	s.render(w, r, "stats.html", statsData{
+		MetaTitle:         meta,
+		MetaURL:           metaURL,
+		Stats:             st,
+		Networks:          networks,
+		ReadOnly:          s.readOnly,
+		WriteAuthRequired: s.writeAuthRequired,
+	})
+}
+
 const maxRegisterForm = 4 << 10
 
 // register accepts the index page's registration form.
@@ -527,10 +555,6 @@ type contractData struct {
 	Interface       *model.Interface
 	IsCurrent       bool
 	Networks        []string
-}
-
-type statsData struct {
-	Stats *store.StatsDetail
 }
 
 // render writes a template, buffering it first so that a failure midway
