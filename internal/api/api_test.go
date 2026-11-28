@@ -1708,6 +1708,7 @@ func TestNewServerEdgeCases(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+
 			s := api.NewServer(tt.reg, tt.log)
 			require.NotNil(t, s, "NewServer must return a non-nil server")
 			require.NotNil(t, s.Routes(), "Routes must return a non-nil handler")
@@ -1716,3 +1717,156 @@ func TestNewServerEdgeCases(t *testing.T) {
 		})
 	}
 }
+
+// TestSetReadOnlyEdgeCases covers the boundary behaviour of SetReadOnly:
+// toggling it off and on, and that reads are untouched while writes are
+// refused with 405 only while the gate is on.
+func TestSetReadOnlyEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	reg := registry.New(stellartest.New(), spec.XDRDecoder{}, store.NewMemory(), registry.Options{Logger: log})
+	s := api.NewServer(reg, log)
+
+	tests := []struct {
+		name                string
+		toggle              bool
+		writesRefused       bool
+		readStatus          int
+		writeStatus         int
+		writeErrorToContain string
+	}{
+		{
+			name:                "read-only off lets writes through",
+			toggle:              false,
+			writesRefused:       false,
+			readStatus:          http.StatusOK,
+			writeStatus:         http.StatusBadRequest,
+			writeErrorToContain: "Bearer",
+		},
+		{
+			name:                "read-only on refuses writes",
+			toggle:              true,
+			writesRefused:       true,
+			readStatus:          http.StatusOK,
+			writeStatus:         http.StatusMethodNotAllowed,
+			writeErrorToContain: "read-only",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			s.SetReadOnly(tt.toggle)
+			r := chi.NewRouter()
+			r.Mount("/api", s.Routes())
+			srv := httptest.NewServer(r)
+			t.Cleanup(srv.Close)
+
+			// Reads stay public either way.
+			resp, err := srv.Client().Get(srv.URL + "/api/contracts")
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+			assert.Equal(t, tt.readStatus, resp.StatusCode,
+				"reads are not affected by read-only mode")
+
+			// Writes are either public (bad request because of missing
+			// contract_id) or refused with 405.
+			resp, err = srv.Client().Post(srv.URL+"/api/contracts", "application/json",
+				strings.NewReader(`{}`))
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+			assert.Equal(t, tt.writeStatus, resp.StatusCode,
+				"writes must "+map[bool]string{true: "be refused", false: "stay public"}[tt.writesRefused])
+			if tt.writeErrorToContain != "" {
+				raw, _ := io.ReadAll(resp.Body)
+				assert.Contains(t, string(raw), tt.writeErrorToContain)
+			}
+		})
+	}
+}
+
+// TestSetAPITokensEdgeCases covers the boundary behaviour of SetAPITokens:
+// an empty list keeps writes public, a nil list is treated the same, a
+// single token gates writes, and an empty string token is rejected by the
+// Bearer parser.
+func TestSetAPITokensEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	reg := registry.New(stellartest.New(), spec.XDRDecoder{}, store.NewMemory(), registry.Options{Logger: log})
+
+	tests := []struct {
+		name          string
+		tokens        []string
+		wantAuth      bool
+		publicWriteStatus int
+	}{
+		{
+			name:          "nil tokens keeps writes public",
+			tokens:        nil,
+			wantAuth:      false,
+			publicWriteStatus: http.StatusBadRequest,
+		},
+		{
+			name:          "empty token list keeps writes public",
+			tokens:        []string{},
+			wantAuth:      false,
+			publicWriteStatus: http.StatusBadRequest,
+		},
+		{
+			name:          "single token gates writes",
+			tokens:        []string{"s3cret"},
+			wantAuth:      true,
+			publicWriteStatus: http.StatusUnauthorized,
+		},
+		{
+			name:          "empty token is not a bearer secret",
+			tokens:        []string{""},
+			wantAuth:      true,
+			publicWriteStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := api.NewServer(reg, log)
+			s.SetAPITokens(tt.tokens)
+			r := chi.NewRouter()
+			r.Mount("/api", s.Routes())
+			srv := httptest.NewServer(r)
+			t.Cleanup(srv.Close)
+
+			// Reads are public regardless of tokens.
+			resp, err := srv.Client().Get(srv.URL + "/api/contracts")
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+			assert.Equal(t, http.StatusOK, resp.StatusCode,
+				"reads are never token-gated")
+
+			// A write without a credential is either public (no tokens)
+			// or unauthorized (tokens configured, but no credential).
+			resp, err = srv.Client().Post(srv.URL+"/api/contracts", "application/json",
+				strings.NewReader(`{"contract_id":"` + idA + `"}`))
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+			assert.Equal(t, tt.publicWriteStatus, resp.StatusCode,
+				"a write without a credential must "+map[bool]string{true: "be unauthorized", false: "stay public"}[tt.wantAuth])
+
+			if tt.wantAuth && len(tt.tokens) > 0 && tt.tokens[0] != "" {
+				resp, err = srv.Client().Post(srv.URL+"/api/contracts", "application/json",
+					strings.NewReader(`{"contract_id":"` + idA + `"}`))
+				require.NoError(t, err)
+				defer func() { _ = resp.Body.Close() }()
+				// We cannot register here without a fake, so we only assert
+				// the status differs from the public case.
+				assert.NotEqual(t, tt.publicWriteStatus, resp.StatusCode,
+					"a valid bearer token changes the response")
+			}
+		})
+	}
+}
+

@@ -298,6 +298,111 @@ func TestNewWebhookEdgeCases(t *testing.T) {
 	}
 }
 
+// TestNotifyEdgeCases covers the boundary behaviour of Notify: an empty
+// change posts successfully (the server sees a zero change), a change with
+// an empty ContractID is still posted, and a change whose ChangedAt is
+// already set keeps its timestamp instead of being overwritten.
+func TestNotifyEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	rec, url := newRecorder(t)
+	webhook, err := refresher.NewWebhook(refresher.WebhookOptions{
+		URL:    url,
+		Secret: "s3cret",
+		Now:    func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
+	})
+	require.NoError(t, err)
+
+	// An empty change still posts.
+	assert.NoError(t, webhook.Notify(context.Background(), refresher.Change{}))
+	requests := rec.all()
+	require.Len(t, requests, 1)
+	var empty refresher.Change
+	require.NoError(t, json.Unmarshal(requests[0].body, &empty))
+	assert.Equal(t, "", empty.ContractID)
+	assert.Equal(t, "", empty.Network)
+	assert.Equal(t, "", empty.OldWasmHash)
+	assert.Equal(t, "", empty.NewWasmHash)
+	assert.Equal(t, "", empty.InterfaceURL)
+	assert.False(t, empty.ChangedAt.IsZero(),
+		"an empty change still gets a timestamp from the clock")
+
+	// A change with an empty ContractID is still posted; only the server
+	// would reject it.
+	rec2, url2 := newRecorder(t)
+	wh2, err := refresher.NewWebhook(refresher.WebhookOptions{
+		URL:    url2,
+		Secret: "",
+		Now:    func() time.Time { return time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC) },
+	})
+	require.NoError(t, err)
+	assert.NoError(t, wh2.Notify(context.Background(), refresher.Change{
+		ContractID:   "",
+		Network:      "",
+		OldWasmHash:  "",
+		NewWasmHash:  "",
+		InterfaceURL: "",
+	}))
+	assert.Len(t, rec2.all(), 1, "an empty change is still delivered")
+
+	// A pre-set ChangedAt is preserved.
+	rec3, url3 := newRecorder(t)
+	wh3, err := refresher.NewWebhook(refresher.WebhookOptions{
+		URL:    url3,
+		Secret: "s3cret",
+		Now:    func() time.Time { return time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC) },
+	})
+	require.NoError(t, err)
+	preset := time.Date(2025, 12, 31, 23, 59, 59, 0, time.UTC)
+	assert.NoError(t, wh3.Notify(context.Background(), refresher.Change{
+		ContractID:   "CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN",
+		Network:      "testnet",
+		OldWasmHash:  "old",
+		NewWasmHash:  "new",
+		InterfaceURL: "/api/contracts/x",
+		ChangedAt:    preset,
+	}))
+	var got3 refresher.Change
+	require.NoError(t, json.Unmarshal(rec3.all()[0].body, &got3))
+	assert.Equal(t, preset.UTC(), got3.ChangedAt, "a pre-set timestamp is preserved")
+
+	// A context cancellation aborts the delivery.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	assert.Error(t, webhook.Notify(ctx, refresher.Change{
+		ContractID:  "CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN",
+		Network:     "testnet",
+		OldWasmHash: "old",
+		NewWasmHash: "new",
+	}))
+}
+
+// ExampleNewWebhook shows a minimal webhook posting a contract change.
+func ExampleNewWebhook() {
+	webhook, err := refresher.NewWebhook(refresher.WebhookOptions{
+		URL:    "https://example.test/hooks/sorovault",
+		Secret: "shared-secret",
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	change := refresher.Change{
+		ContractID:  "CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN",
+		Network:     "testnet",
+		OldWasmHash: "abc123",
+		NewWasmHash: "def456",
+		InterfaceURL: "/api/contracts/CDZZXVGUCLBUTE3WDD6TF2NXPTBPOYTVPPBBIZMSPVIQLUG226XJ4PAN?network=testnet",
+		ChangedAt: time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC),
+	}
+
+	err = webhook.Notify(context.Background(), change)
+	if err != nil {
+		panic(err)
+	}
+	// Output: (no output)
+}
+
 // TestWebhookPostsTheChange proves the webhook client posts what it is
 // told, and reports a refusal as an error.
 func TestWebhookPostsTheChange(t *testing.T) {
