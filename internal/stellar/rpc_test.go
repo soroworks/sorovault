@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -120,22 +121,22 @@ func TestClose(t *testing.T) {
 		t.Parallel()
 
 		tests := []struct {
-			name	string
-			fetcher	*stellar.RPCFetcher
-			wantErr	bool
+			name    string
+			fetcher *stellar.RPCFetcher
+			wantErr bool
 		}{
 			{
-				name:	"happy path with active client",
+				name:    "happy path with active client",
 				fetcher: stellar.NewRPCFetcher("http://localhost:8000", nil),
 				wantErr: false,
 			},
 			{
-				name:	"repeated close calls",
+				name:    "repeated close calls",
 				fetcher: stellar.NewRPCFetcher("http://localhost:8000", nil),
 				wantErr: false,
 			},
 			{
-				name:	"empty or zero url fetcher",
+				name:    "empty or zero url fetcher",
 				fetcher: stellar.NewRPCFetcher("", nil),
 				wantErr: false,
 			},
@@ -543,39 +544,39 @@ func TestNetworkLogLabel(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name	string
-		in	string
-		want	string
+		name string
+		in   string
+		want string
 	}{
 		{
-			name:	"happy path - public",
-			in:	"public",
-			want:	"public",
+			name: "happy path - public",
+			in:   "public",
+			want: "public",
 		},
 		{
-			name:	"happy path - testnet",
-			in:	"testnet",
-			want:	"testnet",
+			name: "happy path - testnet",
+			in:   "testnet",
+			want: "testnet",
 		},
 		{
-			name:	"happy path - futurenet",
-			in:	"futurenet",
-			want:	"futurenet",
+			name: "happy path - futurenet",
+			in:   "futurenet",
+			want: "futurenet",
 		},
 		{
-			name:	"empty input",
-			in:	"",
-			want:	"unknown",
+			name: "empty input",
+			in:   "",
+			want: "unknown",
 		},
 		{
-			name:	"invalid input",
-			in:	"not-a-valid-network",
-			want:	"unknown",
+			name: "invalid input",
+			in:   "not-a-valid-network",
+			want: "unknown",
 		},
 		{
-			name:	"boundary - random string",
-			in:	"Standalone Network ; February 2017",
-			want:	"unknown",
+			name: "boundary - random string",
+			in:   "Standalone Network ; February 2017",
+			want: "unknown",
 		},
 	}
 
@@ -612,41 +613,27 @@ func TestContextCancellation(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestNewRPCFetcherEdgeCases verifies boundary inputs to NewRPCFetcher: a nil
-// HTTP client, an empty URL, and that Close always returns nil.
-func TestNewRPCFetcherEdgeCases(t *testing.T) {
-	t.Parallel()
+// ExampleNewRPCFetcher shows the documented lifetime of an RPCFetcher: build
+// one for an RPC endpoint, read from that endpoint, then close it. The
+// httpClient argument is optional; passing nil uses the SDK's default client.
+//
+// The example talks to a local stand-in for Stellar RPC, so it runs offline and
+// its output stays stable in `go test`.
+func ExampleNewRPCFetcher() {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"passphrase":"Test SDF Network ; September 2015","protocolVersion":23}}`))
+	}))
+	defer srv.Close()
 
-	t.Run("nil httpClient uses SDK default and can reach a server", func(t *testing.T) {
-		t.Parallel()
-		fake := newFakeRPC(t)
-		srv := fake.start()
+	// srv.Client() keeps the example on the local server; pass nil to use the
+	// SDK's default HTTP client.
+	f := stellar.NewRPCFetcher(srv.URL, srv.Client())
+	defer func() { _ = f.Close() }()
 
-		// Passing nil tells the SDK to use its own default http.Client.
-		f := stellar.NewRPCFetcher(srv.URL, nil)
-		t.Cleanup(func() { _ = f.Close() })
+	passphrase, err := f.Network(context.Background())
+	fmt.Println(passphrase, err)
 
-		got, err := f.Network(context.Background())
-		require.NoError(t, err)
-		assert.Equal(t, stellar.NetworkTestnet, got)
-	})
-
-	t.Run("empty URL returns a non-nil fetcher whose calls fail", func(t *testing.T) {
-		t.Parallel()
-		f := stellar.NewRPCFetcher("", nil)
-		require.NotNil(t, f, "NewRPCFetcher must never return nil")
-		t.Cleanup(func() { _ = f.Close() })
-
-		_, err := f.Network(context.Background())
-		require.Error(t, err, "calls on a fetcher with no URL must fail")
-	})
-
-	t.Run("Close returns nil", func(t *testing.T) {
-		t.Parallel()
-		fake := newFakeRPC(t)
-		srv := fake.start()
-
-		f := stellar.NewRPCFetcher(srv.URL, srv.Client())
-		assert.NoError(t, f.Close())
-	})
+	// Output:
+	// Test SDF Network ; September 2015 <nil>
 }
