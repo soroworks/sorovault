@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -120,9 +121,9 @@ func TestClose(t *testing.T) {
 		t.Parallel()
 
 		tests := []struct {
-			name	string
-			fetcher	*stellar.RPCFetcher
-			wantErr	bool
+			name    string
+			fetcher *stellar.RPCFetcher
+			wantErr bool
 		}{
 			{
 				name:    "happy path with active client",
@@ -543,39 +544,39 @@ func TestNetworkLogLabel(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		in      string
-		want    string
+		name string
+		in   string
+		want string
 	}{
 		{
-			name:    "happy path - public",
-			in:      "public",
-			want:    "public",
+			name: "happy path - public",
+			in:   "public",
+			want: "public",
 		},
 		{
-			name:    "happy path - testnet",
-			in:      "testnet",
-			want:    "testnet",
+			name: "happy path - testnet",
+			in:   "testnet",
+			want: "testnet",
 		},
 		{
-			name:    "happy path - futurenet",
-			in:      "futurenet",
-			want:    "futurenet",
+			name: "happy path - futurenet",
+			in:   "futurenet",
+			want: "futurenet",
 		},
 		{
-			name:    "empty input",
-			in:      "",
-			want:    "unknown",
+			name: "empty input",
+			in:   "",
+			want: "unknown",
 		},
 		{
-			name:    "invalid input",
-			in:      "not-a-valid-network",
-			want:    "unknown",
+			name: "invalid input",
+			in:   "not-a-valid-network",
+			want: "unknown",
 		},
 		{
-			name:    "boundary - random string",
-			in:      "Standalone Network ; February 2017",
-			want:    "unknown",
+			name: "boundary - random string",
+			in:   "Standalone Network ; February 2017",
+			want: "unknown",
 		},
 	}
 
@@ -610,4 +611,29 @@ func TestContextCancellation(t *testing.T) {
 
 	_, err := f.FetchContract(ctx, testContractID)
 	require.Error(t, err)
+}
+
+// ExampleNewRPCFetcher shows the documented lifetime of an RPCFetcher: build
+// one for an RPC endpoint, read from that endpoint, then close it. The
+// httpClient argument is optional; passing nil uses the SDK's default client.
+//
+// The example talks to a local stand-in for Stellar RPC, so it runs offline and
+// its output stays stable in `go test`.
+func ExampleNewRPCFetcher() {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"passphrase":"Test SDF Network ; September 2015","protocolVersion":23}}`))
+	}))
+	defer srv.Close()
+
+	// srv.Client() keeps the example on the local server; pass nil to use the
+	// SDK's default HTTP client.
+	f := stellar.NewRPCFetcher(srv.URL, srv.Client())
+	defer func() { _ = f.Close() }()
+
+	passphrase, err := f.Network(context.Background())
+	fmt.Println(passphrase, err)
+
+	// Output:
+	// Test SDF Network ; September 2015 <nil>
 }
